@@ -120,7 +120,8 @@ fn build(app: &gtk::Application) {
     nav.set_hexpand(false);
     let heading = widgets::label("MUSIC", "menu-heading");
     heading.add_css_class("compact-hide");
-    nav.append(&heading);
+    heading.set_hexpand(true);
+    nav.append(&nav_head(&heading));
 
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search library"));
@@ -217,18 +218,13 @@ fn build(app: &gtk::Application) {
         let nav = nav.clone();
         move |w: &gtk::ApplicationWindow| {
             let width = if w.width() > 0 { w.width() } else { w.default_width() };
-            let compact = width > 0 && width < 980;
-            if compact == nav.has_css_class("compact") && nav.has_css_class("sized") {
+            let narrow = width > 0 && width < 980;
+            if narrow == NARROW.with(|n| n.get()) && nav.has_css_class("sized") {
                 return;
             }
             nav.add_css_class("sized");
-            if compact {
-                nav.add_css_class("compact");
-            } else {
-                nav.remove_css_class("compact");
-            }
-            set_compact_hidden(&nav, compact);
-            set_narrow(compact);
+            set_narrow(narrow);
+            apply_compact(&nav, narrow || prefs::get().sidebar_collapsed);
         }
     };
     let aw = apply_width.clone();
@@ -267,10 +263,51 @@ fn build(app: &gtk::Application) {
 
 /// Hide everything marked `compact-hide` in the sidebar (labels, headings,
 /// search, footer) when it's icon-only.
+/// The button that collapses the sidebar to icons, beside the app heading.
+fn nav_head(heading: &gtk::Label) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    row.add_css_class("nav-head");
+    row.append(heading);
+    let button = gtk::Button::from_icon_name("sidebar-show-symbolic");
+    button.add_css_class("nav-collapse");
+    button.set_tooltip_text(Some("Collapse or expand the sidebar (Ctrl+B)"));
+    button.set_valign(gtk::Align::Center);
+    button.connect_clicked(|_| toggle_sidebar());
+    row.append(&button);
+    row
+}
+
+/// The sidebar shows only icons: hide the labels, centre the icons and the toggle.
+fn apply_compact(nav: &gtk::Box, compact: bool) {
+    if compact {
+        nav.add_css_class("compact");
+    } else {
+        nav.remove_css_class("compact");
+    }
+    set_compact_hidden(nav, compact);
+}
+
+pub fn toggle_sidebar() {
+    prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
+    let Some(ui) = ui() else { return };
+    let nav = ui.borrow().nav.clone();
+    apply_compact(&nav, NARROW.with(|n| n.get()) || prefs::get().sidebar_collapsed);
+}
+
 fn set_compact_hidden(root: &gtk::Box, compact: bool) {
     fn walk(w: &gtk::Widget, compact: bool) {
         if w.has_css_class("compact-hide") {
             w.set_visible(!compact);
+        }
+        // Icon-only: centre the icon in its pill, and the toggle in the column.
+        if w.has_css_class("nav-item")
+            && let Some(content) = w.downcast_ref::<gtk::Button>().and_then(|b| b.child())
+        {
+            content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
+        }
+        if w.has_css_class("nav-collapse") {
+            w.set_halign(if compact { gtk::Align::Center } else { gtk::Align::End });
+            w.set_hexpand(compact);
         }
         let mut child = w.first_child();
         while let Some(c) = child {
@@ -295,6 +332,10 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
         match key {
             gdk::Key::f if ctrl => {
                 s2.grab_focus();
+                glib::Propagation::Stop
+            }
+            gdk::Key::b if ctrl => {
+                toggle_sidebar();
                 glib::Propagation::Stop
             }
             gdk::Key::q | gdk::Key::w if ctrl => {

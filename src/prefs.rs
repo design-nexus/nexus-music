@@ -27,6 +27,8 @@ pub struct Prefs {
     pub mode: ThemeMode,
     pub theme: String,
     pub reduce_motion: bool,
+    /// The sidebar shows only icons, whatever the window width.
+    pub sidebar_collapsed: bool,
     pub glow: bool,
     pub last_section: String,
     /// Folders the library is built from.
@@ -73,6 +75,7 @@ impl Default for Prefs {
             mode: ThemeMode::Omarchy,
             theme: "tokyo-night".into(),
             reduce_motion: false,
+            sidebar_collapsed: false,
             glow: true,
             last_section: "albums".into(),
             library_folders: vec![paths::music_dir().to_string_lossy().into_owned()],
