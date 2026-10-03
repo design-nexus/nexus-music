@@ -2,8 +2,8 @@
 //! sortable columns, multi-select, a right-click menu, double-click to play,
 //! and drag-and-drop onto playlists in the sidebar.
 
-use crate::library::{Track, store};
-use crate::sections::{albums, playlist};
+use crate::library::{Kind, Track, store};
+use crate::sections::{albums, playlist, podcasts};
 use crate::{cmd, fmt, player, widgets, window};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -187,6 +187,8 @@ impl TrackTable {
                     Col::Artist => t.artist.clone(),
                     Col::Album => t.album.clone(),
                     Col::Year => t.year.map(|y| y.to_string()).unwrap_or_default(),
+                    Col::Time if t.is_live() => "LIVE".to_string(),
+                    Col::Time if t.duration <= 0.0 && t.is_remote() => String::new(),
                     Col::Time => fmt::time(t.duration),
                     Col::Plays => {
                         let p = t.plays.get();
@@ -429,17 +431,27 @@ impl TrackTable {
         to_playlist.connect_clicked(move |_| pg.set_visible_child_name("playlists"));
         main.append(&to_playlist);
         main.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        let key = first.album_key();
-        main.append(&item("Show album", Box::new(move || albums::show(&key))));
-        let dir = first.path.parent().map(|d| d.to_path_buf());
-        main.append(&item(
-            "Open folder",
-            Box::new(move || {
-                if let Some(d) = &dir {
-                    cmd::spawn(&["xdg-open", &d.to_string_lossy()]);
-                }
-            }),
-        ));
+        match first.kind {
+            Kind::File => {
+                let key = first.album_key();
+                main.append(&item("Show album", Box::new(move || albums::show(&key))));
+                let dir = first.path.parent().map(|d| d.to_path_buf());
+                main.append(&item(
+                    "Open folder",
+                    Box::new(move || {
+                        if let Some(d) = &dir {
+                            cmd::spawn(&["xdg-open", &d.to_string_lossy()]);
+                        }
+                    }),
+                ));
+            }
+            Kind::Episode if !first.feed.is_empty() => {
+                let feed = first.feed.clone();
+                main.append(&item("Show podcast", Box::new(move || podcasts::show(&feed))));
+            }
+            Kind::Station => main.append(&item("Show radio", Box::new(|| window::navigate("radio")))),
+            Kind::Episode => {}
+        }
         if !opts.extra.is_empty() {
             main.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
             for (label, f) in &opts.extra {

@@ -4,8 +4,8 @@
 pub mod engine;
 pub mod queue;
 
-use crate::library::{Track, store};
-use crate::{cmd, paths, prefs, window};
+use crate::library::{Kind, Track, store};
+use crate::{cmd, online, paths, prefs, window};
 use engine::{Engine, Frame};
 use gtk::glib;
 use gtk::prelude::*;
@@ -50,6 +50,10 @@ struct Player {
     failures: usize,
     pending_seek: Option<f64>,
     last_tick: Instant,
+    /// Network buffering in progress (percent).
+    buffering: Option<i32>,
+    /// When an episode's position was last saved.
+    saved_progress: f64,
 }
 
 type Callback = Rc<dyn Fn(Event)>;
@@ -119,6 +123,8 @@ pub fn init() {
             failures: 0,
             pending_seek: None,
             last_tick: Instant::now(),
+            buffering: None,
+            saved_progress: 0.0,
         })
     });
     apply_eq();
@@ -159,6 +165,21 @@ pub fn position() -> f64 {
 
 pub fn duration() -> f64 {
     with(|p| p.duration).unwrap_or(0.0)
+}
+
+/// A radio station is playing: no length, no seeking.
+pub fn is_live() -> bool {
+    current().is_some_and(|t| t.is_live())
+}
+
+/// Percent while a stream is filling its buffer.
+pub fn buffering() -> Option<i32> {
+    with(|p| p.buffering).flatten()
+}
+
+/// A station's logo arrived or its song changed: tell the views.
+pub fn metadata_changed() {
+    emit(Event::Track);
 }
 
 pub fn queue_items() -> (Vec<PathBuf>, Option<usize>) {
@@ -210,10 +231,17 @@ fn on_message(msg: &gst::Message) {
                 });
             }
         }
+        MessageView::Tag(t) => stream_title(&t.tags()),
+        MessageView::Buffering(b) => buffering_changed(b.percent()),
         MessageView::Eos(_) => finished(),
         MessageView::Error(err) => {
             let name = current().map(|t| t.title.clone()).unwrap_or_default();
-            window::toast(&format!("Couldn't play “{name}”: {}", err.error()));
+            if current().is_some_and(|t| t.is_remote()) {
+                window::toast(&format!("Couldn't connect to “{name}”: {}", err.error()));
+            } else {
+                window::toast(&format!("Couldn't play “{name}”: {}", err.error()));
+            }
+            with(|p| p.buffering = None);
             let skip = with(|p| {
                 p.failures += 1;
                 p.failures < p.queue.items.len()
@@ -254,8 +282,59 @@ fn on_message(msg: &gst::Message) {
     }
 }
 
+/// A station names the song it's playing (ICY "Artist - Title"): show it in
+/// place of the station's own name, which moves to the album line.
+fn stream_title(tags: &gst::TagList) {
+    let Some(cur) = current().filter(|t| t.is_live()) else { return };
+    // A station opened from a bare address names itself (icy-name).
+    if let Some(name) = tags.get::<gst::tags::Organization>().map(|v| v.get().trim().to_string())
+        && online::name_station(&cur.path, &name)
+    {
+        with(|p| p.current = Some(store::track_for(&cur.path)));
+        emit(Event::Track);
+    }
+    let Some(text) = tags.get::<gst::tags::Title>().map(|v| v.get().trim().to_string()) else { return };
+    let cur = current().unwrap_or(cur);
+    let station = store::track_for(&cur.path);
+    if text.is_empty() || text == station.title || text == cur.title {
+        return;
+    }
+    let (artist, title) = match text.split_once(" - ") {
+        Some((a, t)) if !a.trim().is_empty() && !t.trim().is_empty() => (a.trim().to_string(), t.trim().to_string()),
+        _ => (station.title.clone(), text),
+    };
+    let shown = Track { title, artist, album: station.title.clone(), ..(*station).clone() };
+    with(|p| p.current = Some(Rc::new(shown)));
+    emit(Event::Track);
+    notify_song();
+}
+
+/// Streams over the network pause while their buffer fills (live ones can't).
+fn buffering_changed(percent: i32) {
+    let live = is_live();
+    let changed = with(|p| {
+        let before = p.buffering;
+        p.buffering = (percent < 100).then_some(percent);
+        if !live && let Some(e) = p.engine.as_ref() {
+            match (before.is_some(), p.buffering.is_some(), p.state) {
+                (false, true, State::Playing) => e.pause(),
+                (true, false, State::Playing) => e.play(),
+                _ => {}
+            }
+        }
+        before.is_some() != p.buffering.is_some()
+    })
+    .unwrap_or(false);
+    if changed {
+        emit(Event::State);
+    }
+}
+
 /// The current song ended on its own.
 fn finished() {
+    if let Some(t) = current().filter(|t| t.kind == Kind::Episode) {
+        online::set_progress(&t.path, 0.0, true);
+    }
     if with(|p| p.queue.advance(false)).flatten().is_some() {
         load_current(true);
     } else {
@@ -281,6 +360,8 @@ fn adopt_current() {
         p.position = 0.0;
         p.heard = 0.0;
         p.counted = false;
+        p.buffering = None;
+        p.saved_progress = 0.0;
     });
     apply_gain();
     schedule_save();
@@ -311,6 +392,22 @@ fn load_current(play: bool) {
         }
         p.last_tick = Instant::now();
     });
+    if let Some(t) = current() {
+        match t.kind {
+            Kind::Episode => {
+                // Pick up an episode where it was left.
+                let pr = online::progress(&t.path);
+                if !pr.played && pr.position > 5.0 {
+                    with(|p| {
+                        p.pending_seek = Some(pr.position);
+                        p.position = pr.position;
+                    });
+                }
+            }
+            Kind::Station if play => online::radio::click(&online::info(&t.path).guid),
+            _ => {}
+        }
+    }
     queue_changed();
     emit(Event::Track);
     emit(Event::State);
@@ -322,6 +419,7 @@ fn load_current(play: bool) {
 
 fn tick() {
     let mut count: Option<Rc<Track>> = None;
+    let mut progress: Option<(PathBuf, f64, bool)> = None;
     let playing = with(|p| {
         let now = Instant::now();
         let dt = now.duration_since(p.last_tick).as_secs_f64();
@@ -333,6 +431,14 @@ fn tick() {
             p.position = pos;
         }
         p.heard += dt;
+        if let Some(t) = p.current.as_ref().filter(|t| t.kind == Kind::Episode)
+            && p.pending_seek.is_none()
+            && (p.position - p.saved_progress).abs() >= 10.0
+        {
+            p.saved_progress = p.position;
+            let played = p.duration > 0.0 && p.position >= p.duration * 0.95;
+            progress = Some((t.path.clone(), if played { 0.0 } else { p.position }, played));
+        }
         if !p.counted && p.heard >= (p.duration * 0.5).clamp(10.0, 240.0) {
             p.counted = true;
             count = p.current.clone();
@@ -342,6 +448,9 @@ fn tick() {
     .unwrap_or(false);
     if let Some(t) = count {
         store::count_play(&t);
+    }
+    if let Some((path, pos, played)) = progress {
+        online::set_progress(&path, pos, played);
     }
     if playing {
         emit(Event::Position);
@@ -354,6 +463,7 @@ pub fn play_tracks(paths: Vec<PathBuf>, start: usize) {
     if paths.is_empty() {
         return;
     }
+    online::keep(&paths);
     with(|p| {
         p.queue.set(paths, start);
         p.failures = 0;
@@ -373,11 +483,13 @@ pub fn shuffle_tracks(paths: Vec<PathBuf>) {
 }
 
 pub fn enqueue(paths: Vec<PathBuf>) {
+    online::keep(&paths);
     with(|p| p.queue.append(&paths));
     queue_changed();
 }
 
 pub fn play_next(paths: Vec<PathBuf>) {
+    online::keep(&paths);
     with(|p| p.queue.insert_next(&paths));
     queue_changed();
 }
@@ -417,8 +529,18 @@ pub fn pause() {
         }
         p.state = State::Paused;
     });
+    save_episode_progress();
     emit(Event::State);
     schedule_save();
+}
+
+fn save_episode_progress() {
+    if let Some(t) = current().filter(|t| t.kind == Kind::Episode) {
+        let (pos, dur) = (position(), duration());
+        if pos > 5.0 && (dur <= 0.0 || pos < dur * 0.95) {
+            online::set_progress(&t.path, pos, false);
+        }
+    }
 }
 
 pub fn toggle() {
@@ -456,6 +578,9 @@ pub fn previous() {
 }
 
 pub fn seek(secs: f64) {
+    if is_live() {
+        return;
+    }
     let secs = secs.clamp(0.0, duration().max(0.0));
     with(|p| {
         if let Some(e) = p.engine.as_mut() {
@@ -610,7 +735,8 @@ pub fn apply_eq() {
 /// (its id, cover and play count) if it was loaded from tags before.
 pub fn library_changed() {
     let changed = with(|p| {
-        let cur = p.current.as_ref()?;
+        // A station's song title isn't in the library; leave it be.
+        let cur = p.current.as_ref().filter(|t| !t.is_live())?;
         let fresh = store::find(&cur.path)?;
         if Rc::ptr_eq(cur, &fresh) {
             return None;
@@ -679,6 +805,7 @@ fn schedule_save() {
 
 /// Write the queue and position now (also called on quit).
 pub fn save() {
+    save_episode_progress();
     let saved = with(|p| Saved {
         items: p.queue.items.clone(),
         cursor: p.queue.cursor,
@@ -704,9 +831,10 @@ fn restore() {
             p.queue.set_shuffle(true);
         }
     });
-    if with(|p| p.queue.current().is_some_and(|c| c.exists())).unwrap_or(false) {
+    if with(|p| p.queue.current().is_some_and(|c| online::is_remote(c) || c.exists())).unwrap_or(false) {
         load_current(false);
-        if saved.position > 1.0 {
+        // A station picks up live; an episode resumes from its own progress.
+        if saved.position > 1.0 && !current().is_some_and(|t| t.is_remote()) {
             with(|p| {
                 p.pending_seek = Some(saved.position);
                 p.position = saved.position;

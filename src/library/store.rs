@@ -108,11 +108,18 @@ pub fn error() -> Option<String> {
 }
 
 pub fn find(path: &Path) -> Option<Rc<Track>> {
+    if crate::online::is_remote(path) {
+        return crate::online::find(path);
+    }
     LIB.with(|l| l.borrow().by_path.get(path).cloned())
 }
 
-/// A track for any file: from the library, or read from its tags.
+/// A track for any file: from the library, or read from its tags. Stations
+/// and episodes come from `online`.
 pub fn track_for(path: &Path) -> Rc<Track> {
+    if crate::online::is_remote(path) {
+        return crate::online::track_for(path);
+    }
     find(path).unwrap_or_else(|| {
         let mut t = tags::read(path);
         t.art = art::key_for(&t);
@@ -346,6 +353,9 @@ pub fn start_watching() {
 
 /// Count a play: the song was heard most of the way through.
 pub fn count_play(t: &Track) {
+    if t.is_remote() {
+        return;
+    }
     t.plays.set(t.plays.get() + 1);
     let path = t.path.clone();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);

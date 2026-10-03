@@ -126,6 +126,17 @@ pub fn build(page: &Page) {
     );
     g.add(&r);
 
+    // ----- Radio and podcasts -----
+    let g = page.group("Radio and podcasts");
+    g.add(&country_row());
+    let (r, _) = widgets::switch_row(
+        "Check for new episodes",
+        "Look for new episodes of your podcasts when Music opens.",
+        p.podcast_refresh,
+        |on| prefs::update(|p| p.podcast_refresh = on),
+    );
+    g.add(&r);
+
     // ----- Playback -----
     let g = page.group("Playback");
     let (r, _) = widgets::switch_row(
@@ -288,4 +299,53 @@ pub fn build(page: &Page) {
         g.add(&widgets::row(what, "", Some(widgets::key_caps(keys).upcast_ref())));
     }
     g.note("Media keys work through MPRIS. From a terminal or a binding: <tt>music --play-pause</tt>, <tt>--next</tt>, <tt>--previous</tt>.");
+}
+
+/// Your country, for local stations and the podcast charts. The list comes
+/// from the radio directory, so it fills in once that answers.
+fn country_row() -> gtk::Box {
+    let auto = crate::online::radio::locale_country();
+    let auto_label = if auto.is_empty() { "Automatic".to_string() } else { format!("Automatic ({auto})") };
+    let current = prefs::get().radio_country;
+    let ids: std::rc::Rc<std::cell::RefCell<Vec<String>>> = std::rc::Rc::new(std::cell::RefCell::new(vec![String::new()]));
+    let mut names = vec![auto_label.clone()];
+    if !current.is_empty() {
+        ids.borrow_mut().push(current.clone());
+        names.push(current.clone());
+    }
+    let model = gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    let dd = gtk::DropDown::new(Some(model), None::<gtk::Expression>);
+    dd.set_valign(gtk::Align::Center);
+    dd.set_enable_search(true);
+    dd.set_selected(if current.is_empty() { 0 } else { 1 });
+    let syncing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (i, s) = (ids.clone(), syncing.clone());
+    dd.connect_selected_notify(move |d| {
+        if s.get() {
+            return;
+        }
+        if let Some(id) = i.borrow().get(d.selected() as usize) {
+            let id = id.clone();
+            prefs::update(|p| p.radio_country = id);
+        }
+    });
+    let d = dd.clone();
+    crate::cmd::background(crate::online::radio::countries, move |res| {
+        let Ok(mut list) = res else { return };
+        list.sort_by_key(|c| c.name.to_lowercase());
+        let current = prefs::get().radio_country;
+        let mut new_ids = vec![String::new()];
+        let mut labels = vec![auto_label];
+        for c in list {
+            new_ids.push(c.code.to_ascii_uppercase());
+            labels.push(c.name);
+        }
+        let selected = new_ids.iter().position(|c| c.eq_ignore_ascii_case(&current)).unwrap_or(0);
+        syncing.set(true);
+        *ids.borrow_mut() = new_ids;
+        d.set_model(Some(&gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>())));
+        d.set_selected(selected as u32);
+        syncing.set(false);
+    });
+    widgets::row("Country", "For local stations and the podcast charts.", Some(dd.upcast_ref()))
 }

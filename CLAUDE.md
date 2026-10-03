@@ -24,12 +24,28 @@
   The UI keeps every track in memory (`store`), grouped into albums on load.
   `db.rs` opens a connection per call so it can run anywhere.
 - Playlists store paths, not ids, so they survive rescans. Pages are `playlist:<id>`.
+- Radio and podcasts (`online/`): a station or episode is a `Track` whose path is its
+  `https://` address (`Kind::Station` / `Kind::Episode`), so the queue, playlists and
+  `state.json` carry them unchanged; `store::track_for`/`find` hand such paths to
+  `online`. Their details live in the `streams` table (plus `stations` for favourites
+  and custom stations, `podcasts` for subscriptions) and in memory in `online::mod`.
+  Items are only written to `streams` once queued, saved, played, downloaded or part of
+  a subscription (`online::keep`, called by `player::play_tracks/enqueue/play_next` and
+  the playlist actions). `radio.rs` is Radio Browser (a mirror is picked once per run),
+  `podcast.rs` is Apple's charts/search plus RSS parsing (roxmltree), `http.rs` is
+  blocking `ureq` run via `cmd::background`. Web pictures are cached like covers, keyed
+  by `hash(url)` (`art::fetch`, `Cover::set_url`).
+- Streams in the player: `MessageView::Tag` on a live station turns ICY "Artist - Title"
+  into a copy of the current track (same path) and names bare stations from icy-name;
+  `Buffering` pauses non-live streams until full. Episodes save their position every
+  10 s, on pause and on quit, and resume through `pending_seek`.
 - MPRIS (`mpris.rs`) runs zbus' blocking API on its own thread: it reads a shared
   snapshot, sends commands back over a channel, and emits PropertiesChanged when the
   UI thread asks. Bus name `org.mpris.MediaPlayer2.music`.
 - Checks: `cargo clippy --all-targets -- -D warnings`, `cargo test`. Visual check:
   `MUSIC_SNAPSHOT=/tmp/x.png [MUSIC_SNAPSHOT_PLAY=1] music --section now-playing`
-  (quit any running instance first; it's single-instance). For tests, point
+  (quit any running instance first, or run it under `dbus-run-session --` so a running
+  one is left alone; it's single-instance). For tests, point
   `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` at scratch dirs with
   `library_folders` set, and use `MUSIC_AUDIO_SINK=fakesink` to play silently.
   `mode = "theme"`, `theme = "catppuccin-latte"` checks light mode.

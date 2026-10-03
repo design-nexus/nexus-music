@@ -15,6 +15,19 @@ half-screen tile.
   - **Artists** and **Genres**, each opening into their albums.
   - **Folders:** your music as it's laid out on disk.
   - **Search** (<kbd>Ctrl</kbd>+<kbd>F</kbd>) across songs, albums and artists.
+- **Radio:** about 58,000 stations from the [Radio Browser](https://www.radio-browser.info)
+  directory, no account needed.
+  - Browse the most popular stations, or by genre or country, or search by name.
+  - Star stations to keep them as favourites, grouped by genre or by country.
+  - Add your own stations by their stream address or a `.pls` / `.m3u` link.
+  - Shows the song a station is playing, when the station sends it.
+- **Podcasts:** Apple's top shows, its 19 categories and search, with no account or key.
+  - Subscribe from the directory or by a show's RSS feed address. New episodes are
+    checked for when Music opens.
+  - Episodes pick up where you left off, and show how much is left.
+  - Download episodes to play offline.
+- Stations and episodes go in the queue and in playlists alongside your songs, and
+  pick up again after a restart.
 - **Now playing:** the cover and song, a full-width spectrum analyzer and what's up
   next.
   - The analyzer draws 40 Hz–16 kHz on a log scale, in sync with what you hear.
@@ -43,8 +56,8 @@ This installs GTK 4 and GStreamer if they're missing, builds with Cargo, and ins
 `bash` to also make it the default app for audio files.
 
 To remove it, run the same line with `uninstall.sh` in place of `install.sh`. Add
-`-s -- --purge` to also remove its settings, library database and playlists. Your music
-files are never touched.
+`-s -- --purge` to also remove its settings, library database, playlists and downloaded
+episodes. Your music files are never touched.
 
 ## Usage
 
@@ -54,9 +67,9 @@ music [OPTIONS] [FILES…]
 
 | Option | What |
 | --- | --- |
-| `FILES…` | Play these songs, folders or `.m3u` playlists |
+| `FILES…` | Play these songs, folders or `.m3u` playlists, or a stream's web address |
 | `--enqueue` | Add `FILES` to the queue instead |
-| `--section ID` | Open a page: `now-playing`, `songs`, `albums`, `artists`, `genres`, `folders`, `queue`, `equalizer`, `settings` |
+| `--section ID` | Open a page: `now-playing`, `songs`, `albums`, `artists`, `genres`, `folders`, `radio`, `podcasts`, `queue`, `equalizer`, `settings` |
 | `--toggle` | Close the window if it's open, otherwise open it |
 | `--play-pause`, `--play`, `--pause`, `--stop`, `--next`, `--previous` | Control playback without raising the window |
 
@@ -74,9 +87,10 @@ music [OPTIONS] [FILES…]
 | --- | --- |
 | `~/.config/nexus-music/settings.toml` | Preferences: library folders, playback, equalizer, theme |
 | `~/.config/nexus-music/themes/*.toml` | Your own themes |
-| `~/.local/share/nexus-music/library.db` | The library, play counts and playlists |
+| `~/.local/share/nexus-music/library.db` | The library, play counts, playlists, favourite stations and podcast subscriptions |
+| `~/.local/share/nexus-music/podcasts/` | Downloaded episodes |
 | `~/.local/share/nexus-music/state.json` | The queue and position, for resuming |
-| `~/.cache/nexus-music/covers/` | Album covers, scaled |
+| `~/.cache/nexus-music/covers/` | Album covers, station logos and podcast art, scaled |
 
 ## License
 

@@ -13,7 +13,9 @@ pub mod equalizer;
 pub mod folders;
 pub mod now_playing;
 pub mod playlist;
+pub mod podcasts;
 pub mod queue;
+pub mod radio;
 pub mod search;
 pub mod settings;
 pub mod songs;
@@ -76,6 +78,24 @@ pub fn all() -> Vec<Section> {
         ),
         s("genres", "Genres", "music-genre-symbolic", "Library", "Your music by genre.", artists::build_genres, true),
         s("folders", "Folders", "folder-music-symbolic", "Library", "Your music as it's laid out on disk.", folders::build, true),
+        s(
+            "radio",
+            "Radio",
+            "music-radio-symbolic",
+            "Online",
+            "Thousands of stations from around the world, by genre and country.",
+            radio::build,
+            true,
+        ),
+        s(
+            "podcasts",
+            "Podcasts",
+            "music-podcast-symbolic",
+            "Online",
+            "Shows you follow, the charts, and every episode to stream or download.",
+            podcasts::build,
+            true,
+        ),
         s("queue", "Queue", "music-queue-symbolic", "Playlists", "What's playing now and next.", queue::build, true),
         s(
             "equalizer",

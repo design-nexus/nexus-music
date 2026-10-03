@@ -57,6 +57,14 @@ pub struct Prefs {
     pub eq_preamp: f64,
     pub eq_bands: [f64; 10],
     pub eq_custom: Vec<EqPreset>,
+    /// Two-letter country for radio and the podcast charts ("" = from the locale).
+    pub radio_country: String,
+    /// How favourite stations are grouped: genre or country.
+    pub radio_group: String,
+    pub radio_tab: String,
+    pub podcast_tab: String,
+    /// Check subscribed podcasts for new episodes when Music opens.
+    pub podcast_refresh: bool,
 }
 
 impl Default for Prefs {
@@ -85,17 +93,41 @@ impl Default for Prefs {
             eq_preamp: 0.0,
             eq_bands: [0.0; 10],
             eq_custom: Vec::new(),
+            radio_country: String::new(),
+            radio_group: "genre".into(),
+            radio_tab: "favourites".into(),
+            podcast_tab: "subscribed".into(),
+            podcast_refresh: true,
         }
     }
 }
 
 thread_local! {
+    static BROKEN: Cell<bool> = const { Cell::new(false) };
     static PREFS: RefCell<Prefs> = RefCell::new(load());
     static PENDING: Cell<Option<glib::SourceId>> = const { Cell::new(None) };
 }
 
 fn load() -> Prefs {
-    std::fs::read_to_string(paths::prefs_file()).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default()
+    let file = paths::prefs_file();
+    let Ok(text) = std::fs::read_to_string(&file) else { return Prefs::default() };
+    match toml::from_str(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            // Don't lose a file with a typo in it: keep a copy before the
+            // defaults are saved over it.
+            let backup = file.with_extension("toml.bak");
+            let _ = std::fs::copy(&file, &backup);
+            eprintln!("music: {} couldn't be read ({e}); kept a copy as {}", file.display(), backup.display());
+            BROKEN.with(|b| b.set(true));
+            Prefs::default()
+        }
+    }
+}
+
+/// True (once) when the settings file couldn't be read at start.
+pub fn take_broken() -> bool {
+    BROKEN.with(|b| b.replace(false))
 }
 
 pub fn get() -> Prefs {

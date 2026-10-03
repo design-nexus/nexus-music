@@ -46,6 +46,7 @@ fn name_of(id: i64) -> String {
 }
 
 pub fn append(id: i64, paths: Vec<PathBuf>) {
+    crate::online::keep(&paths);
     let n = paths.len();
     let name = name_of(id);
     store::edit_playlists(
@@ -59,6 +60,7 @@ pub fn append(id: i64, paths: Vec<PathBuf>) {
 /// Ask for a name and make a playlist (with `paths` in it, if any). With no
 /// songs it also offers importing an M3U file.
 pub fn new_dialog(paths: Vec<PathBuf>) {
+    crate::online::keep(&paths);
     let from_songs = !paths.is_empty();
     let desc = if from_songs { format!("With {}.", fmt::count(paths.len(), "song", "songs")) } else { String::new() };
     let extra = widgets::ask_text("New playlist", &desc, "", "Create", move |name| {

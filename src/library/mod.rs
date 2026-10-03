@@ -18,8 +18,20 @@ pub fn is_audio(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// Where a track comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    File,
+    /// An internet radio station: live, no length, can't seek.
+    Station,
+    /// A podcast episode (or any other audio on the web).
+    Episode,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track {
+    pub kind: Kind,
     /// Row id in the database; 0 for files played from outside the library.
     pub id: i64,
     pub path: PathBuf,
@@ -44,6 +56,10 @@ pub struct Track {
     pub last_played: i64,
     pub mtime: i64,
     pub size: i64,
+    /// A downloaded copy of an episode.
+    pub download: Option<PathBuf>,
+    /// The podcast feed an episode belongs to.
+    pub feed: String,
 }
 
 impl Track {
@@ -57,8 +73,22 @@ impl Track {
         format!("{}\u{1f}{}", self.album_artist_or_artist().to_lowercase(), self.album.to_lowercase())
     }
 
+    /// What GStreamer plays: the file, an episode's download, or the stream address.
     pub fn file_uri(&self) -> String {
-        gtk::glib::filename_to_uri(&self.path, None).map(|u| u.to_string()).unwrap_or_default()
+        let file = match (&self.kind, &self.download) {
+            (Kind::File, _) => &self.path,
+            (_, Some(d)) if d.exists() => d,
+            _ => return self.path.to_string_lossy().into_owned(),
+        };
+        gtk::glib::filename_to_uri(file, None).map(|u| u.to_string()).unwrap_or_default()
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.kind != Kind::File
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.kind == Kind::Station
     }
 
     /// Lowercased text the library search matches against.

@@ -33,6 +33,20 @@ fn volume_icon(v: f64, muted: bool) -> &'static str {
     }
 }
 
+/// "Artist — Album", leaving out what's empty.
+pub fn byline(t: &crate::library::Track) -> String {
+    [t.artist.as_str(), t.album.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" — ")
+}
+
+/// The glyph a cover shows when there's no picture.
+pub fn placeholder_icon(t: &crate::library::Track) -> &'static str {
+    match t.kind {
+        crate::library::Kind::Station => "music-radio-symbolic",
+        crate::library::Kind::Episode => "music-podcast-symbolic",
+        crate::library::Kind::File => "media-optical-symbolic",
+    }
+}
+
 pub fn build() -> gtk::Box {
     let bar = widgets::hbox(16);
     bar.add_css_class("player-bar");
@@ -218,8 +232,9 @@ pub fn build() -> gtk::Box {
                 match player::current() {
                     Some(t) => {
                         title.set_text(&t.title);
-                        artist.set_text(&format!("{} — {}", t.artist, t.album));
+                        artist.set_text(&byline(&t));
                         title.set_tooltip_text(Some(&t.title));
+                        cover.set_placeholder(placeholder_icon(&t));
                         cover.set_key(&t.art);
                     }
                     None => {
@@ -228,19 +243,35 @@ pub fn build() -> gtk::Box {
                         cover.set_key("");
                     }
                 }
+                let live = player::is_live();
+                seek.set_sensitive(!live);
                 let d = player::duration();
                 seek.set_range(0.0, d.max(1.0));
-                dur.set_text(&fmt::time(d));
+                if live {
+                    seek.set_value(0.0);
+                }
+                dur.set_text(&if live { "LIVE".to_string() } else { fmt::time(d) });
                 prev.set_sensitive(player::can_previous());
                 next.set_sensitive(player::can_next());
             }
             Event::State => {
+                if let Some(t) = player::current() {
+                    artist.set_text(&match player::buffering() {
+                        Some(p) if p > 0 => format!("Buffering… {p}%"),
+                        Some(_) => "Connecting…".to_string(),
+                        None => byline(&t),
+                    });
+                }
                 let playing = player::state() == State::Playing;
                 play.set_icon_name(if playing { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" });
                 play.set_tooltip_text(Some(if playing { "Pause (Space)" } else { "Play (Space)" }));
             }
             Event::Position | Event::Seeked => {
                 if dragging.get() != 0 && e == Event::Position {
+                    return;
+                }
+                if player::is_live() {
+                    pos.set_text(&fmt::time(player::position()));
                     return;
                 }
                 let d = player::duration();

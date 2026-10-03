@@ -63,6 +63,7 @@ struct Snapshot {
     can_next: bool,
     can_previous: bool,
     has_track: bool,
+    can_seek: bool,
     meta: Option<Meta>,
 }
 
@@ -78,6 +79,7 @@ impl Default for Snapshot {
             can_next: false,
             can_previous: false,
             has_track: false,
+            can_seek: false,
             meta: None,
         }
     }
@@ -181,7 +183,7 @@ impl Root {
 
     #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<String> {
-        vec!["file".into()]
+        vec!["file".into(), "http".into(), "https".into()]
     }
 
     #[zbus(property)]
@@ -334,7 +336,7 @@ impl Player {
 
     #[zbus(property)]
     fn can_seek(&self) -> bool {
-        self.snap().has_track
+        self.snap().can_seek
     }
 
     #[zbus(property)]
@@ -395,7 +397,7 @@ fn snapshot() -> Snapshot {
         album: t.album.clone(),
         album_artist: t.album_artist.clone(),
         track_no: t.track_no,
-        art_url: if t.art.is_empty() {
+        art_url: if t.art.is_empty() || !art::file(&t.art, false).exists() {
             String::new()
         } else {
             glib::filename_to_uri(art::file(&t.art, false), None).map(|u| u.to_string()).unwrap_or_default()
@@ -420,6 +422,7 @@ fn snapshot() -> Snapshot {
         can_next: player::can_next(),
         can_previous: player::can_previous(),
         has_track: current.is_some(),
+        can_seek: current.as_ref().is_some_and(|t| !t.is_live()),
         meta,
     }
 }
@@ -441,7 +444,9 @@ fn handle(app: &gtk::Application, c: Command) {
             }
         }
         Command::OpenUri(uri) => {
-            if let Some(path) = gio::File::for_uri(&uri).path() {
+            if uri.starts_with("http://") || uri.starts_with("https://") {
+                crate::online::open_urls(vec![uri], false);
+            } else if let Some(path) = gio::File::for_uri(&uri).path() {
                 player::play_tracks(vec![path], 0);
             }
         }
@@ -510,10 +515,18 @@ pub fn start(app: &gtk::Application) {
             }
             if prev.has_track != now.has_track {
                 changed.push("CanPause");
+            }
+            if prev.can_seek != now.can_seek {
                 changed.push("CanSeek");
             }
             let same_meta = match (&prev.meta, &now.meta) {
-                (Some(a), Some(b)) => a.track_id == b.track_id && a.length_us == b.length_us && a.art_url == b.art_url,
+                (Some(a), Some(b)) => {
+                    a.track_id == b.track_id
+                        && a.length_us == b.length_us
+                        && a.art_url == b.art_url
+                        && a.title == b.title
+                        && a.artist == b.artist
+                }
                 (None, None) => true,
                 _ => false,
             };

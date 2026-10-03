@@ -2,7 +2,7 @@
 //! up next.
 
 use crate::library::art::Cover;
-use crate::library::store;
+use crate::library::{Kind, store};
 use crate::player::{self, Event, State, engine};
 use crate::widgets::{self, Page};
 use crate::{fmt, prefs, spectrum};
@@ -113,7 +113,14 @@ pub fn build(page: &Page) {
     let n = artist_name.clone();
     artist_btn.connect_clicked(move |_| super::artists::show(&n.borrow()));
     let k = album_key.clone();
-    album_btn.connect_clicked(move |_| super::albums::show(&k.borrow()));
+    album_btn.connect_clicked(move |_| {
+        let Some(t) = player::current() else { return };
+        match t.kind {
+            Kind::File => super::albums::show(&k.borrow()),
+            Kind::Station => crate::window::navigate("radio"),
+            Kind::Episode => super::podcasts::show(&t.feed),
+        }
+    });
 
     let refresh_next = move || {
         while let Some(c) = next_list.first_child() {
@@ -141,7 +148,7 @@ pub fn build(page: &Page) {
             ar.set_ellipsize(gtk::pango::EllipsizeMode::End);
             ar.set_hexpand(true);
             row.append(&ar);
-            let d = widgets::label(&fmt::time(t.duration), "cell-dim");
+            let d = widgets::label(&if t.is_live() { "LIVE".into() } else { fmt::time(t.duration) }, "cell-dim");
             d.add_css_class("mono");
             row.append(&d);
             b.set_child(Some(&row));
@@ -160,20 +167,41 @@ pub fn build(page: &Page) {
                 match player::current() {
                     Some(t) => {
                         stack.set_visible_child_name("playing");
+                        cover.set_placeholder(crate::playerbar::placeholder_icon(&t));
                         cover.set_key(&t.art);
                         title.set_text(&t.title);
                         artist_lbl.set_text(&t.artist);
                         *artist_name.borrow_mut() = t.album_artist_or_artist().to_string();
-                        album_lbl.set_text(&match t.year {
-                            Some(y) => format!("{} · {y}", t.album),
-                            None => t.album.clone(),
+                        album_lbl.set_text(&match (t.kind, t.year) {
+                            (Kind::File, Some(y)) => format!("{} · {y}", t.album),
+                            _ => t.album.clone(),
                         });
+                        album_btn.set_visible(!t.album.is_empty());
                         *album_key.borrow_mut() = t.album_key();
-                        album_btn.set_sensitive(store::album_of(&t).is_some());
-                        artist_btn.set_sensitive(store::find(&t.path).is_some());
-                        let mut m = vec![fmt::time(t.duration)];
-                        if let Some(ext) = t.path.extension() {
-                            m.push(ext.to_string_lossy().to_uppercase());
+                        album_btn.set_sensitive(t.is_remote() || store::album_of(&t).is_some());
+                        artist_btn.set_sensitive(!t.is_remote() && store::find(&t.path).is_some());
+                        let mut m = Vec::new();
+                        match t.kind {
+                            Kind::File => {
+                                m.push(fmt::time(t.duration));
+                                if let Some(ext) = t.path.extension() {
+                                    m.push(ext.to_string_lossy().to_uppercase());
+                                }
+                            }
+                            Kind::Station => {
+                                m.push("LIVE".into());
+                                m.push(crate::online::http::host(&t.path.to_string_lossy()).to_string());
+                            }
+                            Kind::Episode => {
+                                if t.duration > 0.0 {
+                                    m.push(fmt::time(t.duration));
+                                }
+                                let published = crate::online::info(&t.path).published;
+                                if published > 0 {
+                                    m.push(fmt::date(published));
+                                }
+                                m.push(if t.download.is_some() { "Downloaded".into() } else { "Streaming".into() });
+                            }
                         }
                         let plays = t.plays.get();
                         if plays > 0 {
@@ -185,10 +213,12 @@ pub fn build(page: &Page) {
                 }
                 refresh_next();
             }
-            Event::State => state.set_text(match player::state() {
-                State::Playing => "PLAYING",
-                State::Paused => "PAUSED",
-                State::Stopped => "STOPPED",
+            Event::State => state.set_text(match (player::state(), player::buffering()) {
+                (State::Playing, Some(_)) => "BUFFERING",
+                (State::Playing, None) if player::is_live() => "ON AIR",
+                (State::Playing, None) => "PLAYING",
+                (State::Paused, _) => "PAUSED",
+                (State::Stopped, _) => "STOPPED",
             }),
             Event::Queue => refresh_next(),
             _ => {}
@@ -197,5 +227,12 @@ pub fn build(page: &Page) {
     for e in [Event::Track, Event::State] {
         refresh(e);
     }
-    player::subscribe(&page.body, refresh);
+    let r = refresh.clone();
+    player::subscribe(&page.body, move |e| {
+        r(e);
+        // The state line also says whether a station is live.
+        if e == Event::Track {
+            r(Event::State);
+        }
+    });
 }

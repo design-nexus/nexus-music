@@ -57,6 +57,11 @@ pub fn library_db() -> PathBuf {
     data_dir().join("library.db")
 }
 
+/// Downloaded podcast episodes.
+pub fn podcasts_dir() -> PathBuf {
+    data_dir().join("podcasts")
+}
+
 /// Album covers, extracted and scaled once.
 pub fn covers_dir() -> PathBuf {
     cache_dir().join("covers")

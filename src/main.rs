@@ -5,6 +5,7 @@ mod eq;
 mod fmt;
 mod library;
 mod mpris;
+mod online;
 mod paths;
 mod player;
 mod playerbar;
@@ -26,10 +27,10 @@ pub const APP_ID: &str = "io.github.design_nexus.Music";
 
 const USAGE: &str = "Usage: music [OPTIONS] [FILES…]\n\
 \n\
-  FILES…          play these songs, folders or .m3u playlists\n\
+  FILES…          play these songs, folders or .m3u playlists, or stream addresses\n\
   --enqueue       add FILES to the queue instead of playing them now\n\
   --section ID    open (or switch the open window) to a page: now-playing, songs, albums,\n\
-                  artists, genres, folders, queue, equalizer, settings\n\
+                  artists, genres, folders, radio, podcasts, queue, equalizer, settings\n\
   --toggle        close the window if it's open, otherwise open it (for a keybinding)\n\
   --play-pause, --play, --pause, --stop, --next, --previous\n\
                   control playback in the running window\n";
@@ -43,6 +44,7 @@ fn start(app: &gtk::Application) {
     if STARTED.with(|s| s.replace(true)) {
         return;
     }
+    online::init();
     player::init();
     library::store::reload();
     // Let the window appear first, then look for new music.
@@ -98,6 +100,7 @@ fn main() -> glib::ExitCode {
         let has = |flag: &str| argv.iter().any(|a| a == flag);
         let section = argv.iter().position(|a| a == "--section").and_then(|i| argv.get(i + 1)).cloned();
         let mut files = Vec::new();
+        let mut urls = Vec::new();
         let mut skip = true; // argv[0]
         for a in &argv {
             if std::mem::take(&mut skip) {
@@ -108,6 +111,10 @@ fn main() -> glib::ExitCode {
                 continue;
             }
             if a.starts_with("--") {
+                continue;
+            }
+            if a.starts_with("http://") || a.starts_with("https://") {
+                urls.push(a.clone());
                 continue;
             }
             // Relative paths resolve against the caller's directory, and URIs work too.
@@ -126,7 +133,7 @@ fn main() -> glib::ExitCode {
         start(app);
         let remote = ["--play-pause", "--play", "--pause", "--stop", "--next", "--previous"].iter().any(|f| has(f));
         // Playback commands to a running window shouldn't pop it up.
-        if !(remote && window::window().is_some() && files.is_empty() && section.is_none()) {
+        if !(remote && window::window().is_some() && files.is_empty() && urls.is_empty() && section.is_none()) {
             window::present(app, section.as_deref());
         }
         if has("--play-pause") {
@@ -156,6 +163,9 @@ fn main() -> glib::ExitCode {
             } else {
                 player::play_tracks(songs, 0);
             }
+        }
+        if !urls.is_empty() {
+            online::open_urls(urls, has("--enqueue"));
         }
         glib::ExitCode::SUCCESS
     });

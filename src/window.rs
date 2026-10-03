@@ -60,6 +60,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) {
     if let Some(ui) = ui() {
         ui.borrow().window.present();
     }
+    if prefs::take_broken() {
+        toast("Your settings file couldn't be read, so defaults are in use. The old file is kept as settings.toml.bak.");
+    }
 }
 
 /// Our own symbolic icons, for things the icon theme has no glyph for.
@@ -72,6 +75,8 @@ fn install_icons() {
         ("music-equalizer-symbolic.svg", include_str!("../data/icons/music-equalizer-symbolic.svg")),
         ("music-genre-symbolic.svg", include_str!("../data/icons/music-genre-symbolic.svg")),
         ("music-spectrum-symbolic.svg", include_str!("../data/icons/music-spectrum-symbolic.svg")),
+        ("music-radio-symbolic.svg", include_str!("../data/icons/music-radio-symbolic.svg")),
+        ("music-podcast-symbolic.svg", include_str!("../data/icons/music-podcast-symbolic.svg")),
     ];
     let dir = crate::paths::cache_dir().join("icons");
     for (name, svg) in ICONS {
