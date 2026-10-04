@@ -30,6 +30,27 @@ impl AlbumGrid {
             card.add_css_class("album-card");
             let cover = Cover::new(168, true);
             card.append(&cover.root);
+            // Play straight from the grid; shows on hover.
+            let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
+            play.add_css_class("card-play");
+            play.set_tooltip_text(Some("Play"));
+            play.set_halign(gtk::Align::End);
+            play.set_valign(gtk::Align::End);
+            play.set_focus_on_click(false);
+            cover.root.add_overlay(&play);
+            let w = item.downgrade();
+            play.connect_clicked(move |_| {
+                if let Some(a) = w.upgrade().and_then(|i| i.item()).and_then(|o| boxed::<Rc<Album>>(&o).map(|a| a.clone())) {
+                    player::set_shuffle(false);
+                    player::play_tracks(album_paths(&a), 0);
+                }
+            });
+            let w = item.downgrade();
+            on_context(&card, move |anchor, x, y| {
+                if let Some(a) = w.upgrade().and_then(|i| i.item()).and_then(|o| boxed::<Rc<Album>>(&o).map(|a| a.clone())) {
+                    album_menu(anchor, x, y, &a);
+                }
+            });
             let title = widgets::label("", "album-title");
             title.set_ellipsize(gtk::pango::EllipsizeMode::End);
             title.set_max_width_chars(18);
@@ -87,6 +108,50 @@ impl AlbumGrid {
     }
 }
 
+fn album_paths(a: &Album) -> Vec<PathBuf> {
+    a.tracks.iter().map(|t| t.path.clone()).collect()
+}
+
+/// Right-click on an album: play it, queue it, or go to its artist or folder.
+fn album_menu(anchor: &gtk::Widget, x: f64, y: f64, a: &Rc<Album>) {
+    let paths = album_paths(a);
+    let (p1, p2, p3) = (paths.clone(), paths.clone(), paths.clone());
+    let artist = a.artist.clone();
+    let dir = a.tracks.first().and_then(|t| t.path.parent()).map(|d| d.to_path_buf());
+    let mut items: Vec<(String, Box<dyn Fn()>)> = vec![
+        (
+            "Play".into(),
+            Box::new(move || {
+                player::set_shuffle(false);
+                player::play_tracks(p1.clone(), 0);
+            }),
+        ),
+        (
+            "Play next".into(),
+            Box::new(move || {
+                player::play_next(p2.clone());
+                crate::window::toast(&crate::tracklist::added_text(p2.len(), "to play next"));
+            }),
+        ),
+        (
+            "Add to queue".into(),
+            Box::new(move || {
+                player::enqueue(p3.clone());
+                crate::window::toast(&crate::tracklist::added_text(p3.len(), "to the queue"));
+            }),
+        ),
+        ("-".into(), Box::new(|| {})),
+        ("Show artist".into(), Box::new(move || crate::sections::artists::show(&artist))),
+    ];
+    if let Some(d) = dir {
+        items.push((
+            "Open folder".into(),
+            Box::new(move || crate::cmd::spawn(&["xdg-open", &d.to_string_lossy()])),
+        ));
+    }
+    popup_menu(anchor, x, y, items, Some(paths));
+}
+
 /// A list of artists or genres: cover, name, counts.
 #[derive(Clone)]
 pub struct BucketList {
@@ -95,14 +160,16 @@ pub struct BucketList {
 }
 
 impl BucketList {
-    pub fn new(on_open: impl Fn(String) + 'static) -> BucketList {
+    /// `placeholder` is the icon shown where there's no picture.
+    pub fn new(placeholder: &'static str, on_open: impl Fn(String) + 'static) -> BucketList {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, item| {
+        factory.connect_setup(move |_, item| {
             let item = item.downcast_ref::<gtk::ListItem>().expect("list item");
             let row = widgets::hbox(12);
             row.add_css_class("bucket-row");
             let cover = Cover::new(40, true);
+            cover.set_placeholder(placeholder);
             row.append(&cover.root);
             let text = widgets::vbox(1);
             text.set_valign(gtk::Align::Center);

@@ -67,6 +67,8 @@ pub struct Prefs {
     pub podcast_tab: String,
     /// Check subscribed podcasts for new episodes when Music opens.
     pub podcast_refresh: bool,
+    /// How the album grid is sorted (see `store::ALBUM_SORTS`).
+    pub album_sort: String,
     /// Each song table's sort: "artist", "added:desc"…
     pub table_sort: std::collections::BTreeMap<String, String>,
     /// Each song table's chosen columns.
@@ -105,6 +107,7 @@ impl Default for Prefs {
             radio_tab: "favourites".into(),
             podcast_tab: "subscribed".into(),
             podcast_refresh: true,
+            album_sort: "artist".into(),
             table_sort: Default::default(),
             table_columns: Default::default(),
         }

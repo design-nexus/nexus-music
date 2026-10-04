@@ -27,18 +27,49 @@ pub fn build(page: &Page) {
     inner.set_transition_type(gtk::StackTransitionType::Crossfade);
     inner.set_transition_duration(if crate::prefs::get().reduce_motion { 0 } else { 160 });
     let grid = AlbumGrid::new(|a| open(&a));
-    inner.add_named(&grid.root, Some("grid"));
+    let grid_page = widgets::vbox(10);
+    let toolbar = widgets::hbox(10);
+    toolbar.add_css_class("list-toolbar");
+    let summary = widgets::label("", "dim");
+    summary.add_css_class("mono");
+    summary.set_hexpand(true);
+    toolbar.append(&summary);
+    toolbar.append(&widgets::label("Sort by", "dim"));
+    let sorts = widgets::opts(store::ALBUM_SORTS);
+    let sort = widgets::dropdown(&sorts, &crate::prefs::get().album_sort);
+    toolbar.append(&sort);
+    grid_page.append(&toolbar);
+    grid_page.append(&grid.root);
+    inner.add_named(&grid_page, Some("grid"));
+    let fill = {
+        let (grid, summary) = (grid.clone(), summary.clone());
+        move || {
+            let albums = store::sorted_albums(&crate::prefs::get().album_sort);
+            summary.set_text(&fmt::count(albums.len(), "album", "albums"));
+            grid.set(&albums);
+        }
+    };
+    let f = fill.clone();
+    sort.connect_selected_notify(move |d| {
+        if let Some((id, _)) = sorts.get(d.selected() as usize) {
+            let id = id.clone();
+            crate::prefs::update(|p| p.album_sort = id);
+            f();
+        }
+    });
     let detail = widgets::vbox(0);
     detail.set_vexpand(true);
     inner.add_named(&detail, Some("detail"));
     page.body.append(&library_stack(&inner));
-    grid.set(&store::albums());
-    let g = grid.clone();
+    fill();
     store::subscribe(&inner, move |c| {
+        if c == store::Change::Plays && crate::prefs::get().album_sort == "plays" {
+            fill();
+        }
         if c != store::Change::Library {
             return;
         }
-        g.set(&store::albums());
+        fill();
         // Re-open the album being viewed with fresh data, or fall back to the grid.
         let key = UI.with(|u| u.borrow().as_ref().map(|u| u.open_key.clone())).unwrap_or_default();
         if !key.is_empty() {

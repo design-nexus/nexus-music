@@ -18,6 +18,7 @@ pub mod queue;
 pub mod radio;
 pub mod search;
 pub mod settings;
+pub mod smart;
 pub mod songs;
 
 pub struct Section {
@@ -78,6 +79,25 @@ pub fn all() -> Vec<Section> {
         ),
         s("genres", "Genres", "music-genre-symbolic", "Library", "Your music by genre.", artists::build_genres, true),
         s("folders", "Folders", "folder-music-symbolic", "Library", "Your music as it's laid out on disk.", folders::build, true),
+        s(
+            "recently-added",
+            "Recently added",
+            "music-new-symbolic",
+            "Library",
+            "The albums that joined your library last.",
+            smart::build_added,
+            true,
+        ),
+        s(
+            "recently-played",
+            "Recently played",
+            "document-open-recent-symbolic",
+            "Library",
+            "Songs you've played to the end, newest first.",
+            smart::build_recent,
+            true,
+        ),
+        s("most-played", "Most played", "starred-symbolic", "Library", "The songs you play most.", smart::build_most, true),
         s(
             "radio",
             "Radio",

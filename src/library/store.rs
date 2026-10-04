@@ -37,6 +37,8 @@ pub struct Bucket {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     Library,
+    /// Play counts and last-played times moved (a song played through).
+    Plays,
     Playlists,
     Scan,
 }
@@ -218,6 +220,42 @@ fn group_albums(tracks: &[Rc<Track>]) -> Vec<Rc<Album>> {
     albums
 }
 
+impl Album {
+    /// When the newest of its files joined the library.
+    pub fn added(&self) -> i64 {
+        self.tracks.iter().map(|t| t.mtime).max().unwrap_or(0)
+    }
+
+    pub fn plays(&self) -> u32 {
+        self.tracks.iter().map(|t| t.plays.get()).sum()
+    }
+
+    pub fn last_played(&self) -> i64 {
+        self.tracks.iter().map(|t| t.last_played.get()).max().unwrap_or(0)
+    }
+}
+
+/// The ways the album grid can be sorted: (id, label).
+pub const ALBUM_SORTS: &[(&str, &str)] =
+    &[("artist", "Artist"), ("title", "Title"), ("year", "Year"), ("added", "Recently added"), ("plays", "Most played")];
+
+/// Albums in the given order (an id from [`ALBUM_SORTS`]; anything else is by artist).
+pub fn sorted_albums(by: &str) -> Vec<Rc<Album>> {
+    sort_albums(albums(), by)
+}
+
+fn sort_albums(mut albums: Vec<Rc<Album>>, by: &str) -> Vec<Rc<Album>> {
+    match by {
+        "title" => albums.sort_by_cached_key(|a| (sort_key(&a.title), sort_key(&a.artist))),
+        "year" => albums.sort_by_cached_key(|a| (a.year.unwrap_or(i32::MAX), sort_key(&a.artist), sort_key(&a.title))),
+        "added" => albums.sort_by_cached_key(|a| std::cmp::Reverse(a.added())),
+        "plays" => albums.sort_by_cached_key(|a| std::cmp::Reverse((a.plays(), a.last_played()))),
+        // Already by artist, then year.
+        _ => {}
+    }
+    albums
+}
+
 /// Read the database into memory (off the main thread) and tell the views.
 pub fn reload() {
     cmd::background(
@@ -367,6 +405,8 @@ pub fn count_play(t: &Track) {
     t.plays.set(t.plays.get() + 1);
     let path = t.path.clone();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    t.last_played.set(now);
+    notify(Change::Plays);
     cmd::background(move || db::open().and_then(|c| db::count_play(&c, &path, now)), |_| {});
 }
 
@@ -432,6 +472,25 @@ mod tests {
         assert_eq!(albums[0].artist, "Abba");
         assert_eq!(albums[1].tracks[0].path, PathBuf::from("/a"));
         assert_eq!(albums[1].duration, 120.0);
+    }
+
+    #[test]
+    fn sorts_albums() {
+        let mut a = (*t("/a/1", "Zed", "Abba", 1)).clone();
+        a.year = Some(1999);
+        a.mtime = 10;
+        a.plays.set(1);
+        let mut b = (*t("/b/1", "Alpha", "Queen", 1)).clone();
+        b.year = Some(1975);
+        b.mtime = 20;
+        b.plays.set(5);
+        let albums = group_albums(&[Rc::new(a), Rc::new(b)]);
+        let titles = |by| sort_albums(albums.clone(), by).iter().map(|a| a.title.clone()).collect::<Vec<_>>();
+        assert_eq!(titles("artist"), ["Zed", "Alpha"]);
+        assert_eq!(titles("title"), ["Alpha", "Zed"]);
+        assert_eq!(titles("year"), ["Alpha", "Zed"]);
+        assert_eq!(titles("added"), ["Alpha", "Zed"]);
+        assert_eq!(titles("plays"), ["Alpha", "Zed"]);
     }
 
     #[test]

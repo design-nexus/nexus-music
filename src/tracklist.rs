@@ -29,6 +29,8 @@ pub enum Col {
     Plays,
     /// Codec and quality: "FLAC · 44.1 kHz · 16-bit", "MP3 · 320 kbps".
     Format,
+    /// When it was last played through.
+    Played,
 }
 
 /// The columns a table with a `key` can show or hide, in display order.
@@ -47,6 +49,7 @@ impl Col {
             Col::Time => "Time",
             Col::Plays => "Plays",
             Col::Format => "Format",
+            Col::Played => "Played",
         }
     }
 
@@ -64,6 +67,7 @@ impl Col {
             Col::Time => "time",
             Col::Plays => "plays",
             Col::Format => "format",
+            Col::Played => "played",
         }
     }
 
@@ -76,7 +80,7 @@ impl Col {
     }
 
     fn numeric(self) -> bool {
-        matches!(self, Col::Num | Col::Year | Col::Time | Col::Plays | Col::Added)
+        matches!(self, Col::Num | Col::Year | Col::Time | Col::Plays | Col::Added | Col::Played)
     }
 }
 
@@ -215,6 +219,7 @@ fn compare(col: Col, a: &Track, b: &Track) -> Ordering {
         Col::Genre => cmp_text(&a.genre, &b.genre).then_with(|| cmp_text(&a.artist, &b.artist)),
         Col::Added => a.mtime.cmp(&b.mtime),
         Col::Format => format_of(a).cmp(&format_of(b)),
+        Col::Played => a.last_played.get().cmp(&b.last_played.get()),
         Col::Indicator | Col::Num => Ordering::Equal,
     }
 }
@@ -344,6 +349,8 @@ impl TrackTable {
                     Col::Added if t.is_remote() || t.mtime <= 0 => String::new(),
                     Col::Added => fmt::date(t.mtime),
                     Col::Format => format_of(t),
+                    Col::Played if t.last_played.get() <= 0 => String::new(),
+                    Col::Played => fmt::date(t.last_played.get()),
                     Col::Indicator => String::new(),
                 };
                 l.set_text(&text);
@@ -366,7 +373,7 @@ impl TrackTable {
                 Col::Year => c.set_fixed_width(70),
                 Col::Time => c.set_fixed_width(74),
                 Col::Plays => c.set_fixed_width(70),
-                Col::Added => c.set_fixed_width(110),
+                Col::Added | Col::Played => c.set_fixed_width(110),
                 Col::Genre => c.set_fixed_width(130),
                 Col::Format => c.set_fixed_width(180),
                 Col::Title | Col::Artist | Col::Album => c.set_expand(true),

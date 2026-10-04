@@ -30,7 +30,8 @@ const USAGE: &str = "Usage: music [OPTIONS] [FILES…]\n\
   FILES…          play these songs, folders or .m3u playlists, or stream addresses\n\
   --enqueue       add FILES to the queue instead of playing them now\n\
   --section ID    open (or switch the open window) to a page: now-playing, songs, albums,\n\
-                  artists, genres, folders, radio, podcasts, queue, equalizer, settings\n\
+                  artists, genres, folders, recently-added, recently-played, most-played,\n\
+                  radio, podcasts, queue, equalizer, settings\n\
   --toggle        close the window if it's open, otherwise open it (for a keybinding)\n\
   --play-pause, --play, --pause, --stop, --next, --previous\n\
                   control playback in the running window\n";

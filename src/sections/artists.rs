@@ -57,7 +57,11 @@ fn build(page: &Page, kind: Kind) {
     let inner = gtk::Stack::new();
     inner.set_transition_type(gtk::StackTransitionType::Crossfade);
     inner.set_transition_duration(if crate::prefs::get().reduce_motion { 0 } else { 160 });
-    let list = BucketList::new(move |name| open(kind, &name));
+    let icon = if kind == Kind::Artists { "avatar-default-symbolic" } else { "music-genre-symbolic" };
+    let list = BucketList::new(icon, move |name| open(kind, &name));
+    if kind == Kind::Artists {
+        list.root.add_css_class("artists");
+    }
     inner.add_named(&list.root, Some("list"));
 
     let detail = widgets::vbox(0);

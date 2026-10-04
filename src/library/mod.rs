@@ -53,7 +53,8 @@ pub struct Track {
     pub art: String,
     /// Bumped live when a song is played through; see `store::count_play`.
     pub plays: std::cell::Cell<u32>,
-    pub last_played: i64,
+    /// Unix time; set live like `plays`.
+    pub last_played: std::cell::Cell<i64>,
     pub mtime: i64,
     pub size: i64,
     /// kbps; 0 when unknown.

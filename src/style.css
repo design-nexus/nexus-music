@@ -1207,3 +1207,33 @@ window.music-window columnview > listview > row.drop-above {
 window.music-window columnview > listview > row.drop-below {
   box-shadow: inset 0 -2px 0 0 @theme_accent;
 }
+
+/* ---------- Album cards: play on hover ---------- */
+
+window.music-window button.card-play {
+  min-width: 40px;
+  min-height: 40px;
+  margin: 8px;
+  padding: 0;
+  border-radius: 999px;
+  border: none;
+  background: @theme_accent;
+  color: @theme_bg;
+  box-shadow: 0 2px 10px alpha(@theme_shadow, 0.6);
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+
+.album-grid > child:hover button.card-play,
+window.music-window button.card-play:focus-visible {
+  opacity: 1;
+}
+
+window.music-window button.card-play:hover {
+  background: mix(@theme_accent, @theme_text, 0.15);
+}
+
+/* Artists get round pictures; genres keep square covers. */
+.artists .cover {
+  border-radius: 999px;
+}

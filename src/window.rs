@@ -81,6 +81,7 @@ fn install_icons() {
         ("music-spectrum-symbolic.svg", include_str!("../data/icons/music-spectrum-symbolic.svg")),
         ("music-radio-symbolic.svg", include_str!("../data/icons/music-radio-symbolic.svg")),
         ("music-podcast-symbolic.svg", include_str!("../data/icons/music-podcast-symbolic.svg")),
+        ("music-new-symbolic.svg", include_str!("../data/icons/music-new-symbolic.svg")),
     ];
     let dir = crate::paths::cache_dir().join("icons");
     for (name, svg) in ICONS {

@@ -155,7 +155,7 @@ pub fn load_all(conn: &Connection) -> Result<Vec<Track>> {
             rg_album_peak: r.get(14)?,
             art: r.get(15)?,
             plays: std::cell::Cell::new(r.get(16)?),
-            last_played: r.get(17)?,
+            last_played: std::cell::Cell::new(r.get(17)?),
             mtime: r.get(18)?,
             size: r.get(19)?,
             bitrate: r.get(20)?,
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].title, "A2");
         assert_eq!(all[0].plays.get(), 1);
-        assert_eq!(all[0].last_played, 99);
+        assert_eq!(all[0].last_played.get(), 99);
         assert_eq!(stamps(&conn).unwrap()[&t.path], (5, 2));
         let _ = std::fs::remove_dir_all(dir);
     }
