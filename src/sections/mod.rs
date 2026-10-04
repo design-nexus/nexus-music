@@ -5,7 +5,6 @@ use crate::library::store;
 use crate::widgets::{self, Page};
 use crate::{fmt, paths};
 use gtk::prelude::*;
-use std::path::PathBuf;
 
 pub mod albums;
 pub mod artists;
@@ -27,21 +26,11 @@ pub struct Section {
     pub icon: &'static str,
     pub group: &'static str,
     pub description: &'static str,
-    /// Files the "Open config" button offers.
-    pub files: fn() -> Vec<PathBuf>,
     pub build: fn(&Page),
     /// The page manages its own scrolling (tables, grids).
     pub fill: bool,
     /// Listed in the sidebar (search isn't).
     pub nav: bool,
-}
-
-fn none() -> Vec<PathBuf> {
-    Vec::new()
-}
-
-fn settings_files() -> Vec<PathBuf> {
-    vec![paths::prefs_file()]
 }
 
 pub fn all() -> Vec<Section> {
@@ -51,7 +40,6 @@ pub fn all() -> Vec<Section> {
         icon,
         group,
         description,
-        files: none,
         build,
         fill,
         nav: true,
@@ -117,17 +105,22 @@ pub fn all() -> Vec<Section> {
             true,
         ),
         s("queue", "Queue", "music-queue-symbolic", "Playlists", "What's playing now and next.", queue::build, true),
-        s(
-            "equalizer",
-            "Equalizer",
-            "music-equalizer-symbolic",
-            "Sound",
-            "Shape the sound with ten bands and a preamp.",
-            equalizer::build,
-            false,
-        ),
+        // Opened from the top bar as a card over the window, not listed in the sidebar.
         Section {
-            files: settings_files,
+            nav: false,
+            ..s(
+                "equalizer",
+                "Equalizer",
+                "music-equalizer-symbolic",
+                "Sound",
+                "Shape the sound with ten bands and a preamp.",
+                equalizer::build,
+                false,
+            )
+        },
+        // Opened from the top bar as a dialog, not listed in the sidebar.
+        Section {
+            nav: false,
             ..s(
                 "settings",
                 "Settings",

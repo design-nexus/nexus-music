@@ -298,7 +298,7 @@ thread_local! {
 }
 
 /// Paint the hero's backdrop from this cover (blurred by the stylesheet), and
-/// with "Colours from cover" on, tint the hero's accents with its tone.
+/// with "Colors from cover" on, tint the hero's accents with its tone.
 fn set_backdrop(art: &str) {
     use crate::library::art;
     let path = [art::file(art, false), art::file(art, true)].into_iter().find(|p| !art.is_empty() && p.exists());

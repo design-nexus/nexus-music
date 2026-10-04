@@ -1,7 +1,7 @@
 # Music
 
 A music player for [Omarchy](https://omarchy.org). It plays your music library and
-shows it as a live spectrum. It takes its colours from your Omarchy theme and fits a
+shows it as a live spectrum. It takes its colors from your Omarchy theme and fits a
 half-screen tile.
 
 ## What it does
@@ -24,7 +24,7 @@ half-screen tile.
 - **Radio:** about 58,000 stations from the [Radio Browser](https://www.radio-browser.info)
   directory, no account needed.
   - Browse the most popular stations, or by genre or country, or search by name.
-  - Star stations to keep them as favourites, grouped by genre or by country.
+  - Star stations to keep them as favorites, grouped by genre or by country.
   - Add your own stations by their stream address or a `.pls` / `.m3u` link.
   - Shows the song a station is playing, when the station sends it.
 - **Podcasts:** Apple's top shows, its 19 categories and search, with no account or key.
@@ -38,12 +38,12 @@ half-screen tile.
   spectrum analyzer or the lyrics, and what's up next.
   - Lyrics come from an `.lrc` file with the same name as the song, or from its tags.
     Timed lyrics follow the song; click a line to go there.
-  - Optionally, its accents take the cover's colour.
+  - Optionally, its accents take the cover's color.
   - The analyzer draws 40 Hz–16 kHz on a log scale, in sync with what you hear.
   - Styles: bars, line or mirrored, with peak markers.
   - A small version sits in the player bar on every page.
 - **Playback:** gapless, crossfade (2 to 10 seconds; songs that run on within an album
-  stay gapless), shuffle, repeat (all or one song), and ReplayGain volume levelling by
+  stay gapless), shuffle, repeat (all or one song), and ReplayGain volume leveling by
   song or album. It remembers the queue and position between sessions.
 - **Sleep timer:** pause in 15 minutes to 1½ hours (fading out first), or at the end
   of the song or album.
@@ -54,7 +54,7 @@ half-screen tile.
   - Make playlists from songs or from the queue, or drag songs onto a playlist in the
     sidebar.
   - Import and export M3U.
-- **Equalizer:** ten bands and a preamp, with presets and your own saved ones.
+- **Equalizer:** ten bands and a preamp, with presets and your own saved ones. It opens from the top bar.
 - **Media keys and the bar:** MPRIS, so media keys, `playerctl` and status bars control
   it and show the song and cover.
 - **Notifications** when the song changes while the window is in the background.
@@ -102,7 +102,7 @@ music [OPTIONS] [FILES…]
 | <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> | Go to a page in the sidebar |
 | <kbd>Alt</kbd>+<kbd>←</kbd> or the mouse's back button | Back |
 | <kbd>Ctrl</kbd>+<kbd>B</kbd> | Collapse or expand the sidebar |
-| <kbd>?</kbd> | Show the shortcuts |
+| <kbd>F1</kbd> or <kbd>?</kbd> | Show the shortcuts |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Close |
 
 ## Files
@@ -111,7 +111,7 @@ music [OPTIONS] [FILES…]
 | --- | --- |
 | `~/.config/nexus-music/settings.toml` | Preferences: library folders, playback, equalizer, theme |
 | `~/.config/nexus-music/themes/*.toml` | Your own themes |
-| `~/.local/share/nexus-music/library.db` | The library, play counts, playlists, favourite stations and podcast subscriptions |
+| `~/.local/share/nexus-music/library.db` | The library, play counts, playlists, favorite stations and podcast subscriptions |
 | `~/.local/share/nexus-music/podcasts/` | Downloaded episodes |
 | `~/.local/share/nexus-music/state.json` | The queue and position, for resuming |
 | `~/.cache/nexus-music/covers/` | Album covers, station logos and podcast art, scaled |

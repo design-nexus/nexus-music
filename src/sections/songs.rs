@@ -9,7 +9,7 @@ use gtk::prelude::*;
 
 pub fn build(page: &Page) {
     page.body.append(&scan_banner());
-    let content = widgets::vbox(12);
+    let content = widgets::vbox(0);
     let toolbar = widgets::hbox(12);
     toolbar.add_css_class("list-toolbar");
     let summary = widgets::label("", "dim");

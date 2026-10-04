@@ -1,7 +1,13 @@
 # Music — notes for working on this repo
 
-- GTK4 (gtk4-rs 0.11) + Rust + GStreamer (gstreamer-rs 0.25). No libadwaita. Follows
-  `~/Projects/STYLE.md`; theme, window, widgets and stylesheet started as copies of Tasks
+- GTK4 (gtk4-rs 0.11) + Rust + GStreamer (gstreamer-rs 0.25). No libadwaita. The
+  window is one flat, monospace surface split by hairlines: a top bar (sidebar toggle,
+  `Music / <page>`, search, settings, close), a flat sidebar, the page, the player bar
+  and a status bar (`F1 Shortcuts` · library size). Pages have no title header.
+  Settings is a card over the window (`settings_dialog.rs`): it builds the settings
+  page once and lists its groups (named by `Page::group`) on the left; `navigate("settings")`
+  opens it. The equalizer is a card too (`panel_dialog.rs`), from the top bar or
+  `navigate("equalizer")`. Theme, window, widgets and stylesheet started as copies of Tasks
   (`~/Projects/nexus-tasks`), the faders and segmented control from Settings. Every
   colour is a `@theme_*` token; the analyzer gets its colours from `theme::palette()`.
 - Playback (`player/`): `engine.rs` wraps a `playbin` whose `audio-filter` is

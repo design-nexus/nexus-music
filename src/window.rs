@@ -1,10 +1,11 @@
-//! The main window: navigation sidebar with library search, a stack of pages
-//! built the first time they're shown, and the player bar underneath.
+//! The main window: a top bar (sidebar toggle, where you are, search and
+//! settings), the navigation sidebar, a stack of pages built the first time
+//! they're shown, the player bar and a status bar underneath.
 
 use crate::library::store;
 use crate::sections::{self, Section};
 use crate::widgets;
-use crate::{player, playerbar, prefs, theme};
+use crate::{fmt, panel_dialog, player, playerbar, prefs, settings_dialog, theme};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use std::cell::RefCell;
@@ -18,8 +19,8 @@ struct Ui {
     nav_items: HashMap<String, gtk::Button>,
     playlist_box: gtk::Box,
     search: gtk::SearchEntry,
-    /// The search shown from the icon-only sidebar.
-    pop_search: gtk::SearchEntry,
+    /// The current page's name, in the top bar.
+    crumb: gtk::Label,
     pages: HashMap<String, gtk::Widget>,
     sections: Vec<Section>,
     current: String,
@@ -123,17 +124,6 @@ fn build(app: &gtk::Application) {
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 0);
     nav.add_css_class("settings-navigation");
     nav.set_hexpand(false);
-    let heading = widgets::label("MUSIC", "menu-heading");
-    heading.add_css_class("compact-hide");
-    heading.set_hexpand(true);
-    nav.append(&nav_head(&heading));
-
-    let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search library"));
-    search.add_css_class("settings-search");
-    search.add_css_class("compact-hide");
-    nav.append(&search);
-    let (search_pop, pop_search) = compact_search(&nav);
 
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let mut nav_items = HashMap::new();
@@ -142,7 +132,9 @@ fn build(app: &gtk::Application) {
     for s in sections.iter().filter(|s| s.nav) {
         if s.group != last_group {
             let g = widgets::label(&s.group.to_uppercase(), "nav-group");
-            g.add_css_class("compact-hide");
+            if last_group.is_empty() {
+                g.add_css_class("first");
+            }
             list.append(&g);
             last_group = s.group;
         }
@@ -170,29 +162,6 @@ fn build(app: &gtk::Application) {
         .build();
     nav.append(&nav_scroll);
 
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    footer.add_css_class("nav-footer");
-    footer.add_css_class("compact-hide");
-    let version = widgets::label(concat!("Music ", env!("CARGO_PKG_VERSION")), "dim");
-    version.set_hexpand(true);
-    footer.append(&version);
-    let scan_label = widgets::label("", "nav-readout");
-    scan_label.add_css_class("mono");
-    footer.append(&scan_label);
-    nav.append(&footer);
-    {
-        let l = scan_label.clone();
-        store::subscribe(&scan_label, move |c| {
-            if c == store::Change::Scan {
-                l.set_text(&match store::scanning() {
-                    Some((done, total)) if total > 0 => format!("{}%", done * 100 / total),
-                    Some(_) => "Scanning".into(),
-                    None => String::new(),
-                });
-            }
-        });
-    }
-
     // ----- Content -----
     let stack = gtk::Stack::new();
     stack.add_css_class("settings-content");
@@ -201,23 +170,24 @@ fn build(app: &gtk::Application) {
     stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     stack.set_transition_duration(if prefs::get().reduce_motion { 0 } else { 160 });
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.set_hexpand(true);
-    content.append(&stack);
-    content.append(&playerbar::build());
-
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    body.set_vexpand(true);
     body.append(&nav);
-    body.append(&content);
+    body.append(&stack);
+
+    let (top, crumb, search) = top_bar(&window);
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    frame.add_css_class("window-frame");
+    frame.append(&top);
+    frame.append(&body);
+    frame.append(&playerbar::build());
+    frame.append(&status_bar());
 
     let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&body));
+    overlay.set_child(Some(&frame));
     window.set_child(Some(&overlay));
 
-    install_keys(&window, &search, &nav, &search_pop, &pop_search);
-    search.connect_search_changed(|e| on_search(&e.text()));
-    search.connect_activate(|_| sections::search::focus_results());
-    search.connect_stop_search(|e| e.set_text(""));
+    install_keys(&window, &search);
 
     // Narrow windows (a tiled half-screen) get an icon-only sidebar.
     let apply_width = {
@@ -225,6 +195,8 @@ fn build(app: &gtk::Application) {
         move |w: &gtk::ApplicationWindow| {
             let width = if w.width() > 0 { w.width() } else { w.default_width() };
             let narrow = width > 0 && width < 980;
+            settings_dialog::fit(w);
+            panel_dialog::fit(w);
             if narrow == NARROW.with(|n| n.get()) && nav.has_css_class("sized") {
                 return;
             }
@@ -251,7 +223,7 @@ fn build(app: &gtk::Application) {
         nav_items,
         playlist_box: playlist_box.clone(),
         search,
-        pop_search,
+        crumb,
         pages: HashMap::new(),
         sections,
         current: String::new(),
@@ -269,54 +241,108 @@ fn build(app: &gtk::Application) {
     refresh_playlists();
 }
 
-/// The icon-only sidebar has no room for the search field: a search button
-/// opens one in a popover instead.
-fn compact_search(nav: &gtk::Box) -> (gtk::Popover, gtk::SearchEntry) {
-    let (button, label) = nav_button("system-search-symbolic", "Search", "Search the library (Ctrl+F)");
-    label.add_css_class("compact-hide");
-    button.add_css_class("compact-show");
-    button.set_visible(false);
-    let pop = gtk::Popover::new();
-    pop.set_parent(&button);
-    pop.set_position(gtk::PositionType::Right);
-    pop.add_css_class("search-popover");
-    let entry = gtk::SearchEntry::new();
-    entry.set_placeholder_text(Some("Search library"));
-    entry.add_css_class("settings-search");
-    entry.set_width_chars(28);
-    pop.set_child(Some(&entry));
-    entry.connect_search_changed(|e| on_search(&e.text()));
-    let p = pop.clone();
-    entry.connect_activate(move |_| {
-        p.popdown();
-        sections::search::focus_results();
+/// The bar across the top: the sidebar toggle and where you are on the left;
+/// search, settings and close on the right.
+fn top_bar(window: &gtk::ApplicationWindow) -> (gtk::Box, gtk::Label, gtk::SearchEntry) {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    bar.add_css_class("top-bar");
+    let toggle = widgets::icon_button("sidebar-show-symbolic", "Collapse or expand the sidebar (Ctrl+B)");
+    toggle.add_css_class("bar-button");
+    toggle.connect_clicked(|_| toggle_sidebar());
+    bar.append(&toggle);
+
+    let crumbs = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    crumbs.add_css_class("crumbs");
+    crumbs.append(&widgets::label("Music", "crumb-root"));
+    crumbs.append(&widgets::label("/", "crumb-sep"));
+    let crumb = widgets::label("", "crumb");
+    crumb.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    crumbs.append(&crumb);
+    crumbs.set_hexpand(true);
+    bar.append(&crumbs);
+
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Search library"));
+    search.add_css_class("bar-search");
+    search.set_width_chars(26);
+    search.set_visible(false);
+    bar.append(&search);
+    let find = widgets::icon_button("system-search-symbolic", "Search the library (Ctrl+F)");
+    find.add_css_class("bar-button");
+    let s = search.clone();
+    find.connect_clicked(move |_| {
+        if s.is_visible() && s.text().is_empty() {
+            s.set_visible(false);
+        } else {
+            s.set_visible(true);
+            s.grab_focus();
+        }
     });
-    let p = pop.clone();
-    entry.connect_stop_search(move |e| {
+    bar.append(&find);
+    search.connect_search_changed(|e| on_search(&e.text()));
+    search.connect_activate(|_| sections::search::focus_results());
+    search.connect_stop_search(|e| {
         e.set_text("");
-        p.popdown();
+        e.set_visible(false);
     });
-    let (p, e) = (pop.clone(), entry.clone());
-    button.connect_clicked(move |_| {
-        p.popup();
-        e.grab_focus();
-    });
-    nav.append(&button);
-    (pop, entry)
+
+    let eq = widgets::bar_button("music-equalizer-symbolic", "Equalizer");
+    eq.connect_clicked(|_| open_equalizer());
+    bar.append(&eq);
+    let gear = widgets::icon_button("emblem-system-symbolic", "Settings");
+    gear.add_css_class("bar-button");
+    gear.connect_clicked(|_| settings_dialog::open());
+    bar.append(&gear);
+    let close = widgets::icon_button("window-close-symbolic", "Close (Ctrl+Q)");
+    close.add_css_class("bar-button");
+    let w = window.clone();
+    close.connect_clicked(move |_| w.close());
+    bar.append(&close);
+    (bar, crumb, search)
 }
 
-/// The button that collapses the sidebar to icons, beside the app heading.
-fn nav_head(heading: &gtk::Label) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    row.add_css_class("nav-head");
-    row.append(heading);
-    let button = gtk::Button::from_icon_name("sidebar-show-symbolic");
-    button.add_css_class("nav-collapse");
-    button.set_tooltip_text(Some("Collapse or expand the sidebar (Ctrl+B)"));
-    button.set_valign(gtk::Align::Center);
-    button.connect_clicked(|_| toggle_sidebar());
-    row.append(&button);
-    row
+/// The bar along the bottom: the shortcuts on the left, the library on the right.
+fn status_bar() -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    bar.add_css_class("status-bar");
+    let help = gtk::Button::new();
+    help.add_css_class("status-help");
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    content.append(&widgets::label("F1", "status-key"));
+    content.append(&widgets::label("Shortcuts", ""));
+    help.set_child(Some(&content));
+    help.set_tooltip_text(Some("Show the keyboard shortcuts"));
+    help.connect_clicked(|_| show_shortcuts());
+    bar.append(&help);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+    let readout = widgets::label("", "status-readout");
+    readout.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+    bar.append(&readout);
+    let refresh = {
+        let readout = readout.clone();
+        move || {
+            let tracks = store::tracks();
+            let mut text = match store::scanning() {
+                Some((done, total)) if total > 0 => format!("Scanning {}% · ", done * 100 / total),
+                Some(_) => "Scanning · ".to_string(),
+                None => String::new(),
+            };
+            if store::loaded() {
+                let secs: f64 = tracks.iter().map(|t| t.duration).sum();
+                text.push_str(&fmt::count(tracks.len(), "song", "songs"));
+                if secs > 0.0 {
+                    text.push_str(" · ");
+                    text.push_str(&fmt::total(secs));
+                }
+            }
+            readout.set_text(&text);
+        }
+    };
+    refresh();
+    store::subscribe(&readout, move |_| refresh());
+    bar
 }
 
 /// The sidebar shows only icons: hide the labels (everything marked
@@ -351,10 +377,6 @@ fn set_compact_hidden(root: &gtk::Box, compact: bool) {
         {
             content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
         }
-        if w.has_css_class("nav-collapse") {
-            w.set_halign(if compact { gtk::Align::Center } else { gtk::Align::End });
-            w.set_hexpand(compact);
-        }
         let mut child = w.first_child();
         while let Some(c) = child {
             walk(&c, compact);
@@ -364,19 +386,12 @@ fn set_compact_hidden(root: &gtk::Box, compact: bool) {
     walk(root.upcast_ref(), compact);
 }
 
-fn install_keys(
-    window: &gtk::ApplicationWindow,
-    search: &gtk::SearchEntry,
-    nav: &gtk::Box,
-    search_pop: &gtk::Popover,
-    pop_search: &gtk::SearchEntry,
-) {
+fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
     // Capture phase: these work wherever focus is, except while typing.
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let s2 = search.clone();
     let w2 = window.clone();
-    let (nav, search_pop, pop_search) = (nav.clone(), search_pop.clone(), pop_search.clone());
     keys.connect_key_pressed(move |_, key, _, mods| {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         let typing = gtk::prelude::GtkWindowExt::focus(&w2).is_some_and(|f| {
@@ -385,14 +400,35 @@ fn install_keys(
         let alt = mods.contains(gdk::ModifierType::ALT_MASK);
         let plain = !ctrl && !alt;
         let done = glib::Propagation::Stop;
+        if panel_dialog::is_open() && key == gdk::Key::Escape {
+            panel_dialog::close();
+            return done;
+        }
+        if settings_dialog::is_open() {
+            return match key {
+                gdk::Key::Escape => {
+                    settings_dialog::escape();
+                    done
+                }
+                gdk::Key::f if ctrl => {
+                    settings_dialog::focus_search();
+                    done
+                }
+                gdk::Key::q | gdk::Key::w if ctrl => {
+                    w2.close();
+                    done
+                }
+                _ => glib::Propagation::Proceed,
+            };
+        }
         match key {
             gdk::Key::f if ctrl => {
-                if nav.has_css_class("compact") {
-                    search_pop.popup();
-                    pop_search.grab_focus();
-                } else {
-                    s2.grab_focus();
-                }
+                s2.set_visible(true);
+                s2.grab_focus();
+                done
+            }
+            gdk::Key::F1 => {
+                show_shortcuts();
                 done
             }
             gdk::Key::b if ctrl => {
@@ -452,8 +488,9 @@ fn install_keys(
                 player::next();
                 done
             }
-            gdk::Key::Escape if !s2.text().is_empty() => {
+            gdk::Key::Escape if s2.is_visible() => {
                 s2.set_text("");
+                s2.set_visible(false);
                 done
             }
             _ => glib::Propagation::Proceed,
@@ -510,7 +547,7 @@ pub const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["Ctrl", "1–9"], "Go to a page in the sidebar"),
     (&["Alt", "←"], "Back"),
     (&["Ctrl", "B"], "Collapse or expand the sidebar"),
-    (&["?"], "Show these shortcuts"),
+    (&["F1"], "Show these shortcuts"),
     (&["Ctrl", "Q"], "Close"),
 ];
 
@@ -640,10 +677,10 @@ fn ensure_built(id: &str) -> bool {
     } else {
         let section = {
             let u = ui.borrow();
-            u.sections.iter().find(|s| s.id == id).map(|s| (s.id, s.title, s.description, (s.files)(), s.build, s.fill))
+            u.sections.iter().find(|s| s.id == id).map(|s| (s.id, s.build, s.fill))
         };
-        let Some((sid, title, description, files, build, fill)) = section else { return false };
-        let page = widgets::page(sid, title, description, &files);
+        let Some((sid, build, fill)) = section else { return false };
+        let page = widgets::page(sid);
         if fill {
             page.fill();
         }
@@ -663,6 +700,18 @@ pub fn navigate(id: &str) {
 
 fn go(id: &str, record: bool) {
     let Some(ui) = ui() else { return };
+    // Settings and the equalizer are cards over the window, not pages.
+    if id == "settings" || id == "equalizer" {
+        if id == "settings" {
+            settings_dialog::open();
+        } else {
+            open_equalizer();
+        }
+        if !ui.borrow().current.is_empty() {
+            return;
+        }
+    }
+    let id = if id == "settings" || id == "equalizer" { "albums" } else { id };
     if id.starts_with("playlist:") && !store::loaded() {
         PENDING.with(|p| *p.borrow_mut() = Some(id.to_string()));
     }
@@ -686,17 +735,30 @@ fn go(id: &str, record: bool) {
     }
     u.stack.set_visible_child_name(&id);
     u.current = id.clone();
+    u.crumb.set_text(&page_title(&u.sections, &id));
     let search = u.search.clone();
-    let pop_search = u.pop_search.clone();
     drop(u);
     if id != "search" {
-        if !search.text().is_empty() || !pop_search.text().is_empty() {
+        if !search.text().is_empty() {
             ui.borrow_mut().before_search.clear();
             search.set_text("");
-            pop_search.set_text("");
+            search.set_visible(false);
         }
         prefs::update(|p| p.last_section = id);
     }
+}
+
+/// The equalizer, as a card over the window.
+pub fn open_equalizer() {
+    panel_dialog::open("equalizer", "Equalizer", sections::equalizer::build);
+}
+
+/// A page's name for the top bar: its section's title or the playlist's name.
+fn page_title(sections: &[Section], id: &str) -> String {
+    if let Some(pid) = id.strip_prefix("playlist:").and_then(|p| p.parse::<i64>().ok()) {
+        return store::playlists().into_iter().find(|p| p.id == pid).map(|p| p.name).unwrap_or_default();
+    }
+    sections.iter().find(|s| s.id == id).map(|s| s.title.to_string()).unwrap_or_default()
 }
 
 /// Drop a page so it's rebuilt next time (a deleted playlist).
@@ -819,6 +881,11 @@ fn show_toast(message: &str, action: ToastAction<'_>) {
 
 pub fn current() -> String {
     ui().map(|u| u.borrow().current.clone()).unwrap_or_default()
+}
+
+/// The layer over the window, for toasts and the settings dialog.
+pub fn overlay() -> Option<gtk::Overlay> {
+    ui().map(|u| u.borrow().overlay.clone())
 }
 
 pub fn window() -> Option<gtk::ApplicationWindow> {

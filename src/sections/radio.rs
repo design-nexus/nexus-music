@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 
 const TABS: &[(&str, &str)] = &[
-    ("favourites", "Favourites"),
+    ("favourites", "Favorites"),
     ("popular", "Popular"),
     ("genres", "Genres"),
     ("countries", "Countries"),
@@ -56,7 +56,7 @@ impl StationRow {
         text.append(&name);
         text.append(&meta);
         root.append(&text);
-        let star = widgets::icon_button("non-starred-symbolic", "Add to favourites");
+        let star = widgets::icon_button("non-starred-symbolic", "Add to favorites");
         star.add_css_class("star-button");
         star.set_focus_on_click(false);
         root.append(&star);
@@ -85,7 +85,7 @@ impl StationRow {
         self.meta.set_text(if meta.is_empty() { "Internet radio" } else { &meta });
         let fav = online::is_favourite(s.stream());
         self.star.set_icon_name(if fav { "starred-symbolic" } else { "non-starred-symbolic" });
-        self.star.set_tooltip_text(Some(if fav { "Remove from favourites" } else { "Add to favourites" }));
+        self.star.set_tooltip_text(Some(if fav { "Remove from favorites" } else { "Add to favorites" }));
         if fav {
             self.star.add_css_class("accent-text");
         } else {
@@ -119,7 +119,7 @@ fn menu(anchor: &gtk::Widget, x: f64, y: f64, s: &Station) {
     let fav = online::is_favourite(s.stream());
     let st = s.clone();
     items.push((
-        if fav { "Remove from favourites" } else { "Add to favourites" }.into(),
+        if fav { "Remove from favorites" } else { "Add to favorites" }.into(),
         Box::new(move || online::set_favourite(&st, !fav)),
     ));
     let url = s.stream().to_string();
@@ -273,7 +273,7 @@ fn favourites_view() -> gtk::Widget {
     stack.add_named(&scroll, Some("list"));
     let empty = widgets::empty_state(
         "starred-symbolic",
-        "No favourite stations yet",
+        "No favorite stations yet",
         "Star a station to keep it here, or add one of your own with <b>Add station</b>.",
         Some(("Browse popular stations", Box::new(|| set_tab("popular")))),
     );
@@ -463,7 +463,7 @@ pub fn station_dialog(existing: Option<Station>) {
     let s = existing.clone().unwrap_or_default();
     let (dialog, card) = widgets::dialog(if editing { "Edit station" } else { "Add station" }, 460);
     let d = widgets::label(
-        "A stream address, or a link to a <tt>.pls</tt> or <tt>.m3u</tt> playlist for one. It joins your favourites.",
+        "A stream address, or a link to a <tt>.pls</tt> or <tt>.m3u</tt> playlist for one. It joins your favorites.",
         "dim",
     );
     d.set_use_markup(true);

@@ -161,7 +161,7 @@ pub fn build(page: &Page) {
         |v| prefs::update(|p| p.crossfade = v.parse().unwrap_or(0.0)),
     ));
     g.add(&widgets::segmented_row(
-        "Volume levelling",
+        "Volume leveling",
         "Uses ReplayGain tags to even out loudness, per song or per album.",
         widgets::opts(&[("off", "Off"), ("track", "Song"), ("album", "Album")]),
         &p.replaygain,
@@ -236,7 +236,7 @@ pub fn build(page: &Page) {
         let dd = theme_dd.clone();
         let (r, _) = widgets::switch_row(
             "Follow Omarchy theme",
-            "Match the desktop's colours and update live whenever the Omarchy theme changes.",
+            "Match the desktop's colors and update live whenever the Omarchy theme changes.",
             p.mode == prefs::ThemeMode::Omarchy,
             move |on| {
                 prefs::update(|p| p.mode = if on { prefs::ThemeMode::Omarchy } else { prefs::ThemeMode::Theme });
@@ -281,11 +281,11 @@ pub fn build(page: &Page) {
         }
         glib::ControlFlow::Continue
     });
-    g.add(&widgets::row("Current colours", "", Some(swatches.upcast_ref())));
+    g.add(&widgets::row("Current colors", "", Some(swatches.upcast_ref())));
 
     let (r, _) = widgets::switch_row(
-        "Colours from cover",
-        "Tint Now playing with the colour of the cover that's playing.",
+        "Colors from cover",
+        "Tint Now playing with the color of the cover that's playing.",
         p.cover_colours,
         |on| {
             prefs::update(|p| p.cover_colours = on);

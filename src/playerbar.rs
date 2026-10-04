@@ -201,7 +201,7 @@ pub fn build() -> gtk::Box {
     let info = widgets::hbox(12);
     info.add_css_class("player-info");
     info.set_size_request(220, -1);
-    let cover = Cover::new(52, true);
+    let cover = Cover::new(40, true);
     cover.root.set_valign(gtk::Align::Center);
     info.append(&cover.root);
     let text = widgets::vbox(2);

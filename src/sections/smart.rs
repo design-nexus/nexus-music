@@ -49,7 +49,7 @@ pub fn build_most(page: &Page) {
 /// A song list picked from the library, kept up to date as songs play.
 fn songs(page: &Page, key: &'static str, cols: &'static [Col], pick: fn(Vec<Rc<Track>>) -> Vec<Rc<Track>>) {
     page.body.append(&scan_banner());
-    let content = widgets::vbox(12);
+    let content = widgets::vbox(0);
     let toolbar = widgets::hbox(12);
     toolbar.add_css_class("list-toolbar");
     let summary = widgets::label("", "dim");

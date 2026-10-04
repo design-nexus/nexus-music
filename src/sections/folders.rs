@@ -126,8 +126,8 @@ pub fn build(page: &Page) {
     card.set_overflow(gtk::Overflow::Hidden);
     card.set_vexpand(true);
     card.append(&scroll);
-    let browse = widgets::vbox(10);
-    browse.append(&widgets::label("Click a folder to see its songs; use the arrows to look inside.", "group-note"));
+    let browse = widgets::vbox(0);
+    browse.append(&widgets::label("Click a folder to see its songs; use the arrows to look inside.", "page-hint"));
     browse.append(&card);
     inner.add_named(&browse, Some("tree"));
 
