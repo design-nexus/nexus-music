@@ -149,6 +149,17 @@ pub fn build(page: &Page) {
         },
     );
     g.add(&r);
+    let current = match prefs::get().crossfade {
+        c if c <= 0.0 => "0".to_string(),
+        c => format!("{c:.0}"),
+    };
+    g.add(&widgets::segmented_row(
+        "Crossfade",
+        "Fade each song into the next. Songs that run on within an album stay gapless.",
+        widgets::opts(&[("0", "Off"), ("2", "2 s"), ("4", "4 s"), ("6", "6 s"), ("10", "10 s")]),
+        &current,
+        |v| prefs::update(|p| p.crossfade = v.parse().unwrap_or(0.0)),
+    ));
     g.add(&widgets::segmented_row(
         "Volume levelling",
         "Uses ReplayGain tags to even out loudness, per song or per album.",

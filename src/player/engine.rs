@@ -24,6 +24,8 @@ pub struct Frame {
 }
 
 pub struct Engine {
+    /// Tells this engine's bus messages apart from the other one's (crossfade).
+    pub id: u8,
     pub playbin: gst::Element,
     eq: Option<gst::Element>,
     gain: Option<gst::Element>,
@@ -112,6 +114,7 @@ impl Engine {
         }
 
         Ok(Engine {
+            id: 0,
             playbin,
             eq,
             gain,

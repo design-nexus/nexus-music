@@ -57,6 +57,18 @@ struct Player {
     sleep: Sleep,
     /// 0..1 on top of ReplayGain: the sleep timer's fade-out.
     fade: f64,
+    /// A second engine the next song starts in while crossfading.
+    spare: Option<Engine>,
+    xfade: Option<Xfade>,
+}
+
+/// A crossfade in progress: `engine` fades out while `spare` fades in.
+struct Xfade {
+    start: Instant,
+    secs: f64,
+    /// Each song's own gain (ReplayGain × preamp), before the fade.
+    out_gain: f64,
+    in_gain: f64,
 }
 
 /// The sleep timer: pause at a set time (fading out first), or when the song
@@ -116,7 +128,7 @@ pub fn init() {
     let p = prefs::get();
     let (engine, error) = match Engine::new() {
         Ok(mut e) => {
-            e.watch(on_message);
+            e.watch(|m| on_message(0, m));
             e.set_volume(linear_volume(p.volume), p.muted);
             (Some(e), None)
         }
@@ -143,6 +155,8 @@ pub fn init() {
             saved_progress: 0.0,
             sleep: Sleep::Off,
             fade: 1.0,
+            spare: None,
+            xfade: None,
         })
     });
     apply_eq();
@@ -235,8 +249,12 @@ pub fn with_frame<R>(f: impl FnOnce(&Frame) -> R) -> Option<R> {
 
 // ---------- Engine events ----------
 
-fn on_message(msg: &gst::Message) {
+fn on_message(id: u8, msg: &gst::Message) {
     use gst::MessageView;
+    // While crossfading, the incoming engine is the spare: it's adopted at the end.
+    if with(|p| p.engine.as_ref().map(|e| e.id)).flatten() != Some(id) {
+        return;
+    }
     match msg.view() {
         MessageView::Element(e) => {
             if let Some(s) = e.structure()
@@ -251,6 +269,7 @@ fn on_message(msg: &gst::Message) {
         }
         MessageView::Tag(t) => stream_title(&t.tags()),
         MessageView::Buffering(b) => buffering_changed(b.percent()),
+        MessageView::Eos(_) if with(|p| p.xfade.is_some()).unwrap_or(false) => finish_xfade(),
         MessageView::Eos(_) => finished(),
         MessageView::Error(err) => {
             let name = current().map(|t| t.title.clone()).unwrap_or_default();
@@ -405,6 +424,7 @@ fn adopt_current() {
 }
 
 fn load_current(play: bool) {
+    cancel_xfade();
     // A resume seek only applies to the song it was saved for.
     with(|p| p.pending_seek = None);
     adopt_current();
@@ -487,6 +507,7 @@ fn tick() {
         store::count_play(&t);
     }
     sleep_tick();
+    maybe_start_xfade();
     if let Some((path, pos, played)) = progress {
         online::set_progress(&path, pos, played);
     }
@@ -555,6 +576,152 @@ fn slept() {
     window::toast("Sleep timer: paused.");
 }
 
+// ---------- Crossfade ----------
+
+/// The next song carries straight on from this one on the same album (a live
+/// album, a DJ mix): leave it gapless.
+fn continues_album(a: &Track, b: &Track) -> bool {
+    a.album_key() == b.album_key()
+        && a.disc_no.unwrap_or(1) == b.disc_no.unwrap_or(1)
+        && a.track_no.zip(b.track_no).is_some_and(|(x, y)| y == x + 1)
+}
+
+/// Near the end of a song, start the next one in the spare engine and fade
+/// between them.
+fn maybe_start_xfade() {
+    let secs = prefs::get().crossfade;
+    if secs <= 0.0 || state() != State::Playing || with(|p| p.xfade.is_some()).unwrap_or(true) {
+        return;
+    }
+    let Some(cur) = current().filter(|t| t.kind == Kind::File) else { return };
+    let (pos, dur) = (position(), duration());
+    // The check runs every 250 ms: start a little early, and fit the fade to
+    // the time that's left, so it's complete before the song ends.
+    if dur < secs * 2.0 + 1.0 || pos < dur - secs - 0.3 {
+        return;
+    }
+    let secs = (dur - pos - 0.1).clamp(0.5, secs);
+    let Some(next) = with(|p| p.queue.peek_next().cloned()).flatten().map(|n| store::track_for(&n)) else { return };
+    if next.kind != Kind::File
+        || next.path == cur.path
+        || continues_album(&cur, &next)
+        || sleep_stops_before(Some(&cur), Some(&next))
+    {
+        return;
+    }
+    let p = prefs::get();
+    let bands = if p.eq_enabled { p.eq_bands } else { [0.0; 10] };
+    let (out_gain, in_gain) = (base_gain(Some(&cur)), base_gain(Some(&next)));
+    let uri = next.file_uri();
+    let started = with(|pl| {
+        if pl.spare.is_none() {
+            let id = pl.engine.as_ref().map_or(1, |e| e.id ^ 1);
+            pl.spare = Engine::new().ok().map(|mut e| {
+                e.id = id;
+                e.watch(move |m| on_message(id, m));
+                e
+            });
+        }
+        let Some(spare) = pl.spare.as_mut() else { return false };
+        spare.set_volume(linear_volume(p.volume), p.muted);
+        spare.set_eq(&bands);
+        spare.set_gain(0.0);
+        spare.load(&uri);
+        spare.play();
+        if let Some(e) = pl.engine.as_ref() {
+            // The fade moves on, not gapless.
+            e.set_next(None);
+        }
+        pl.xfade = Some(Xfade { start: Instant::now(), secs, out_gain, in_gain });
+        true
+    })
+    .unwrap_or(false);
+    if started {
+        glib::timeout_add_local(std::time::Duration::from_millis(30), || {
+            if xfade_step() { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
+        });
+    }
+}
+
+/// One step of the fade (equal power, so the loudness holds). False once it's over.
+fn xfade_step() -> bool {
+    let done = with(|p| {
+        let x = p.xfade.as_ref()?;
+        let f = (x.start.elapsed().as_secs_f64() / x.secs).min(1.0);
+        let angle = f * std::f64::consts::FRAC_PI_2;
+        if let Some(e) = p.engine.as_ref() {
+            e.set_gain(x.out_gain * angle.cos() * p.fade);
+        }
+        if let Some(s) = p.spare.as_ref() {
+            s.set_gain(x.in_gain * angle.sin() * p.fade);
+        }
+        Some(f >= 1.0)
+    })
+    .flatten();
+    match done {
+        Some(true) => {
+            finish_xfade();
+            false
+        }
+        Some(false) => true,
+        None => false,
+    }
+}
+
+/// The fade is over: the spare engine becomes the player and the queue moves on.
+fn finish_xfade() {
+    let swapped = with(|p| {
+        if p.xfade.take().is_none() {
+            return false;
+        }
+        if let Some(e) = p.engine.as_mut() {
+            e.stop();
+        }
+        std::mem::swap(&mut p.engine, &mut p.spare);
+        p.queue.advance(false);
+        p.failures = 0;
+        p.last_tick = Instant::now();
+        true
+    })
+    .unwrap_or(false);
+    if !swapped {
+        return;
+    }
+    adopt_current();
+    with(|p| {
+        if let Some(d) = p.engine.as_ref().and_then(|e| e.duration()) {
+            p.duration = d;
+        }
+        if let Some(pos) = p.engine.as_ref().and_then(|e| e.position()) {
+            p.position = pos;
+        }
+    });
+    apply_gain();
+    queue_changed();
+    emit(Event::Track);
+    emit(Event::State);
+    emit(Event::Seeked);
+    notify_song();
+}
+
+/// Stop a crossfade where it is: the song that was fading out carries on.
+fn cancel_xfade() {
+    let had = with(|p| {
+        if p.xfade.take().is_none() {
+            return false;
+        }
+        if let Some(s) = p.spare.as_mut() {
+            s.stop();
+        }
+        true
+    })
+    .unwrap_or(false);
+    if had {
+        apply_gain();
+        queue_changed();
+    }
+}
+
 // ---------- Commands ----------
 
 pub fn play_tracks(paths: Vec<PathBuf>, start: usize) {
@@ -621,6 +788,7 @@ pub fn pause() {
     if state() != State::Playing {
         return;
     }
+    cancel_xfade();
     with(|p| {
         if let Some(e) = p.engine.as_ref() {
             e.pause();
@@ -646,6 +814,7 @@ pub fn toggle() {
 }
 
 pub fn stop() {
+    cancel_xfade();
     with(|p| {
         if let Some(e) = p.engine.as_mut() {
             e.stop();
@@ -680,6 +849,7 @@ pub fn seek(secs: f64) {
         return;
     }
     let secs = secs.clamp(0.0, duration().max(0.0));
+    cancel_xfade();
     with(|p| {
         if let Some(e) = p.engine.as_mut() {
             e.seek(secs);
@@ -770,7 +940,7 @@ pub fn set_volume(v: f64) {
     prefs::update(|p| p.volume = v);
     let muted = prefs::get().muted;
     with(|p| {
-        if let Some(e) = p.engine.as_ref() {
+        for e in p.engine.iter().chain(p.spare.iter()) {
             e.set_volume(linear_volume(v), muted);
         }
     });
@@ -781,7 +951,7 @@ pub fn set_muted(muted: bool) {
     prefs::update(|p| p.muted = muted);
     let v = prefs::get().volume;
     with(|p| {
-        if let Some(e) = p.engine.as_ref() {
+        for e in p.engine.iter().chain(p.spare.iter()) {
             e.set_volume(linear_volume(v), muted);
         }
     });
@@ -840,13 +1010,22 @@ pub fn replaygain_factor(t: &Track, mode: &str) -> f64 {
     f
 }
 
-fn apply_gain() {
+/// A song's own gain: ReplayGain × the equalizer's preamp.
+fn base_gain(t: Option<&Track>) -> f64 {
     let p = prefs::get();
-    let rg = current().map_or(1.0, |t| replaygain_factor(&t, &p.replaygain));
+    let rg = t.map_or(1.0, |t| replaygain_factor(t, &p.replaygain));
     let preamp = if p.eq_enabled { 10f64.powf(p.eq_preamp / 20.0) } else { 1.0 };
+    rg * preamp
+}
+
+fn apply_gain() {
+    let gain = base_gain(current().as_deref());
     with(|pl| {
-        if let Some(e) = pl.engine.as_ref() {
-            e.set_gain(rg * preamp * pl.fade);
+        // A crossfade sets its own gains as it goes.
+        if pl.xfade.is_none()
+            && let Some(e) = pl.engine.as_ref()
+        {
+            e.set_gain(gain * pl.fade);
         }
     });
 }
@@ -856,7 +1035,7 @@ pub fn apply_eq() {
     let p = prefs::get();
     let bands = if p.eq_enabled { p.eq_bands } else { [0.0; 10] };
     with(|pl| {
-        if let Some(e) = pl.engine.as_ref() {
+        for e in pl.engine.iter().chain(pl.spare.iter()) {
             e.set_eq(&bands);
         }
     });
@@ -1003,5 +1182,18 @@ mod tests {
         assert_eq!(linear_volume(1.0), 1.0);
         assert!((linear_volume(0.5) - 0.125).abs() < 1e-9);
         assert_eq!(linear_volume(2.0), 1.0);
+    }
+
+    #[test]
+    fn crossfade_skips_songs_that_run_on() {
+        let t = |album: &str, n: u32| Track {
+            album: album.into(),
+            artist: "A".into(),
+            track_no: Some(n),
+            ..Default::default()
+        };
+        assert!(continues_album(&t("Live", 3), &t("Live", 4)));
+        assert!(!continues_album(&t("Live", 3), &t("Live", 5)));
+        assert!(!continues_album(&t("Live", 3), &t("Other", 4)));
     }
 }

@@ -36,6 +36,8 @@ pub struct Prefs {
     /// Rescan when files are added, removed or renamed.
     pub watch: bool,
     pub gapless: bool,
+    /// Seconds one song fades into the next; 0 is off.
+    pub crossfade: f64,
     /// off, track or album.
     pub replaygain: String,
     /// Restore the queue and position on start.
@@ -91,6 +93,7 @@ impl Default for Prefs {
             library_folders: vec![paths::music_dir().to_string_lossy().into_owned()],
             watch: true,
             gapless: true,
+            crossfade: 0.0,
             replaygain: "track".into(),
             resume: true,
             notify: true,
