@@ -54,7 +54,23 @@ struct Player {
     buffering: Option<i32>,
     /// When an episode's position was last saved.
     saved_progress: f64,
+    sleep: Sleep,
+    /// 0..1 on top of ReplayGain: the sleep timer's fade-out.
+    fade: f64,
 }
+
+/// The sleep timer: pause at a set time (fading out first), or when the song
+/// or album ends.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Sleep {
+    Off,
+    At(Instant),
+    EndOfSong,
+    EndOfAlbum,
+}
+
+/// How long a timed sleep fades out before it pauses.
+const SLEEP_FADE: f64 = 8.0;
 
 type Callback = Rc<dyn Fn(Event)>;
 type Listener = (glib::WeakRef<gtk::Widget>, Callback);
@@ -125,6 +141,8 @@ pub fn init() {
             last_tick: Instant::now(),
             buffering: None,
             saved_progress: 0.0,
+            sleep: Sleep::Off,
+            fade: 1.0,
         })
     });
     apply_eq();
@@ -257,6 +275,7 @@ fn on_message(msg: &gst::Message) {
             let switched = with(|p| p.engine.as_ref().is_some_and(|e| e.take_switched())).unwrap_or(false);
             if switched {
                 // Gapless: the engine already moved on; catch the queue up.
+                let ended = current();
                 with(|p| {
                     p.queue.advance(false);
                     p.failures = 0;
@@ -264,6 +283,11 @@ fn on_message(msg: &gst::Message) {
                 adopt_current();
                 emit(Event::Track);
                 queue_changed();
+                if sleep_stops_before(ended.as_deref(), current().as_deref()) {
+                    pause();
+                    seek(0.0);
+                    slept();
+                }
             }
         }
         MessageView::AsyncDone(_) => {
@@ -335,9 +359,17 @@ fn finished() {
     if let Some(t) = current().filter(|t| t.kind == Kind::Episode) {
         online::set_progress(&t.path, 0.0, true);
     }
+    let ended = current();
     if with(|p| p.queue.advance(false)).flatten().is_some() {
-        load_current(true);
+        let stop_here = sleep_stops_before(ended.as_deref(), current_in_queue().as_deref());
+        load_current(!stop_here);
+        if stop_here {
+            slept();
+        }
     } else {
+        if sleep() != Sleep::Off && !matches!(sleep(), Sleep::At(_)) {
+            set_sleep(Sleep::Off);
+        }
         with(|p| {
             if let Some(e) = p.engine.as_mut() {
                 e.stop();
@@ -348,6 +380,11 @@ fn finished() {
         emit(Event::State);
         emit(Event::Seeked);
     }
+}
+
+/// The track at the queue's cursor (which `current` follows after a load).
+fn current_in_queue() -> Option<Rc<Track>> {
+    with(|p| p.queue.current().cloned()).flatten().map(|p| store::track_for(&p))
 }
 
 /// Point `current` at the queue's song and reset the per-song counters.
@@ -449,12 +486,73 @@ fn tick() {
     if let Some(t) = count {
         store::count_play(&t);
     }
+    sleep_tick();
     if let Some((path, pos, played)) = progress {
         online::set_progress(&path, pos, played);
     }
     if playing {
         emit(Event::Position);
     }
+}
+
+// ---------- Sleep timer ----------
+
+pub fn sleep() -> Sleep {
+    with(|p| p.sleep).unwrap_or(Sleep::Off)
+}
+
+/// Seconds until a timed sleep pauses.
+pub fn sleep_remaining() -> Option<f64> {
+    match sleep() {
+        Sleep::At(t) => Some(t.saturating_duration_since(Instant::now()).as_secs_f64()),
+        _ => None,
+    }
+}
+
+pub fn set_sleep(s: Sleep) {
+    with(|p| {
+        p.sleep = s;
+        p.fade = 1.0;
+    });
+    apply_gain();
+    emit(Event::Options);
+}
+
+/// Fade out over the last seconds of a timed sleep, then pause.
+fn sleep_tick() {
+    let Some(left) = sleep_remaining() else { return };
+    if state() != State::Playing {
+        return;
+    }
+    if left <= 0.0 {
+        pause();
+        set_sleep(Sleep::Off);
+        window::toast("Sleep timer: paused.");
+        return;
+    }
+    let fade = (left / SLEEP_FADE).min(1.0);
+    if (with(|p| p.fade).unwrap_or(1.0) - fade).abs() > 0.001 {
+        with(|p| p.fade = fade);
+        apply_gain();
+    }
+}
+
+/// When a song has just ended by itself and `next` comes after it: should
+/// an end-of-song or end-of-album sleep pause here?
+fn sleep_stops_before(ended: Option<&Track>, next: Option<&Track>) -> bool {
+    match sleep() {
+        Sleep::EndOfSong => true,
+        Sleep::EndOfAlbum => match (ended, next) {
+            (Some(a), Some(b)) => a.is_remote() || a.album_key() != b.album_key(),
+            _ => true,
+        },
+        _ => false,
+    }
+}
+
+fn slept() {
+    set_sleep(Sleep::Off);
+    window::toast("Sleep timer: paused.");
 }
 
 // ---------- Commands ----------
@@ -748,7 +846,7 @@ fn apply_gain() {
     let preamp = if p.eq_enabled { 10f64.powf(p.eq_preamp / 20.0) } else { 1.0 };
     with(|pl| {
         if let Some(e) = pl.engine.as_ref() {
-            e.set_gain(rg * preamp);
+            e.set_gain(rg * preamp * pl.fade);
         }
     });
 }

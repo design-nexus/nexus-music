@@ -67,6 +67,10 @@ pub struct Prefs {
     pub podcast_tab: String,
     /// Check subscribed podcasts for new episodes when Music opens.
     pub podcast_refresh: bool,
+    /// Now playing shows the spectrum or the lyrics.
+    pub now_view: String,
+    /// Now playing takes its accent from the cover.
+    pub cover_colours: bool,
     /// How the album grid is sorted (see `store::ALBUM_SORTS`).
     pub album_sort: String,
     /// Each song table's sort: "artist", "added:desc"…
@@ -107,6 +111,8 @@ impl Default for Prefs {
             radio_tab: "favourites".into(),
             podcast_tab: "subscribed".into(),
             podcast_refresh: true,
+            now_view: "spectrum".into(),
+            cover_colours: false,
             album_sort: "artist".into(),
             table_sort: Default::default(),
             table_columns: Default::default(),

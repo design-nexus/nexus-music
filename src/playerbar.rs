@@ -47,6 +47,143 @@ pub fn placeholder_icon(t: &crate::library::Track) -> &'static str {
     }
 }
 
+/// A vertical volume slider and a mute switch, for narrow windows.
+fn volume_popover(anchor: &gtk::Button) -> gtk::Popover {
+    let pop = gtk::Popover::new();
+    pop.set_parent(anchor);
+    pop.add_css_class("volume-popover");
+    let bx = widgets::vbox(8);
+    let slider = gtk::Scale::with_range(gtk::Orientation::Vertical, 0.0, 1.0, 0.01);
+    slider.set_inverted(true);
+    slider.set_draw_value(false);
+    slider.set_size_request(-1, 140);
+    slider.set_halign(gtk::Align::Center);
+    slider.add_css_class("volume");
+    slider.set_value(prefs::get().volume);
+    slider.connect_change_value(|_, _, v| {
+        let v = v.clamp(0.0, 1.0);
+        player::set_volume(v);
+        if prefs::get().muted && v > 0.0 {
+            player::set_muted(false);
+        }
+        glib::Propagation::Proceed
+    });
+    let mute = gtk::ToggleButton::with_label("Mute");
+    mute.set_active(prefs::get().muted);
+    mute.connect_toggled(|b| {
+        if b.is_active() != prefs::get().muted {
+            player::set_muted(b.is_active());
+        }
+    });
+    bx.append(&slider);
+    bx.append(&mute);
+    pop.set_child(Some(&bx));
+    let (sl, m) = (slider.clone(), mute.clone());
+    player::subscribe(&slider, move |e| {
+        if e == Event::Options {
+            let p = prefs::get();
+            if (sl.value() - p.volume).abs() > 0.005 {
+                sl.set_value(p.volume);
+            }
+            m.set_active(p.muted);
+        }
+    });
+    pop
+}
+
+/// The sleep timer: a moon that's lit while a timer is set.
+fn sleep_button() -> gtk::MenuButton {
+    let button = gtk::MenuButton::new();
+    button.set_icon_name("weather-clear-night-symbolic");
+    button.add_css_class("flat");
+    button.add_css_class("icon-button");
+    button.add_css_class("sleep-button");
+    button.set_focus_on_click(false);
+    let pop = gtk::Popover::new();
+    pop.add_css_class("menu-popover");
+    let list = widgets::vbox(1);
+    let heading = widgets::label("Sleep timer", "menu-heading-inline");
+    heading.set_margin_start(10);
+    heading.set_margin_top(4);
+    heading.set_margin_bottom(4);
+    list.append(&heading);
+    // Minutes for a timed sleep; None for the other choices.
+    let choices: [(&str, Option<u64>, player::Sleep); 8] = [
+        ("Off", None, player::Sleep::Off),
+        ("In 15 minutes", Some(15), player::Sleep::Off),
+        ("In 30 minutes", Some(30), player::Sleep::Off),
+        ("In 45 minutes", Some(45), player::Sleep::Off),
+        ("In 1 hour", Some(60), player::Sleep::Off),
+        ("In 1½ hours", Some(90), player::Sleep::Off),
+        ("At the end of this song", None, player::Sleep::EndOfSong),
+        ("At the end of this album", None, player::Sleep::EndOfAlbum),
+    ];
+    for (label, minutes, choice) in choices {
+        let b = gtk::Button::with_label(label);
+        b.add_css_class("flat");
+        b.add_css_class("menu-item");
+        if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+            l.set_xalign(0.0);
+        }
+        let p = pop.clone();
+        b.connect_clicked(move |_| {
+            p.popdown();
+            // Timed choices start counting when picked.
+            let s = minutes.map_or(choice, |m| {
+                player::Sleep::At(std::time::Instant::now() + std::time::Duration::from_secs(m * 60))
+            });
+            player::set_sleep(s);
+            if s != player::Sleep::Off {
+                window::toast(&format!("Sleep timer: {}.", sleep_text(s)));
+            }
+        });
+        list.append(&b);
+    }
+    pop.set_child(Some(&list));
+    button.set_popover(Some(&pop));
+
+    let refresh = {
+        let button = button.clone();
+        move || {
+            let s = player::sleep();
+            if s == player::Sleep::Off {
+                button.remove_css_class("active");
+                button.set_tooltip_text(Some("Sleep timer"));
+            } else {
+                button.add_css_class("active");
+                button.set_tooltip_text(Some(&format!("Sleep timer: {}", sleep_text(s))));
+            }
+        }
+    };
+    refresh();
+    player::subscribe(&button, move |e| {
+        if matches!(e, Event::Options | Event::Position | Event::Track) {
+            refresh();
+        }
+    });
+    button
+}
+
+/// "pauses in 23 min", "pauses after this song"…
+fn sleep_text(s: player::Sleep) -> String {
+    match s {
+        player::Sleep::Off => "off".into(),
+        player::Sleep::At(_) => {
+            let left = player::sleep_remaining().unwrap_or(0.0);
+            let mins = (left / 60.0).ceil().max(1.0) as u64;
+            if mins >= 60 && mins.is_multiple_of(60) {
+                format!("pauses in {} h", mins / 60)
+            } else if mins >= 60 {
+                format!("pauses in {} h {} min", mins / 60, mins % 60)
+            } else {
+                format!("pauses in {mins} min")
+            }
+        }
+        player::Sleep::EndOfSong => "pauses after this song".into(),
+        player::Sleep::EndOfAlbum => "pauses after this album".into(),
+    }
+}
+
 pub fn build() -> gtk::Box {
     let bar = widgets::hbox(16);
     bar.add_css_class("player-bar");
@@ -137,6 +274,8 @@ pub fn build() -> gtk::Box {
     sclick.connect_released(|_, _, _, _| window::navigate("now-playing"));
     strip.add_controller(sclick);
     right.append(&strip);
+    let sleep = sleep_button();
+    right.append(&sleep);
     let p = prefs::get();
     let mute = widgets::icon_button(volume_icon(p.volume, p.muted), "Mute");
     mute.set_focus_on_click(false);
@@ -173,7 +312,19 @@ pub fn build() -> gtk::Box {
             player::cycle_repeat();
         }
     });
-    mute.connect_clicked(|_| player::set_muted(!prefs::get().muted));
+    // Narrow, the slider is hidden: the button opens one in a popover instead.
+    let volume_pop = volume_popover(&mute);
+    mute.connect_clicked(move |_| {
+        if window::narrow() {
+            volume_pop.popup();
+        } else {
+            player::set_muted(!prefs::get().muted);
+        }
+    });
+    let middle = gtk::GestureClick::new();
+    middle.set_button(gtk::gdk::BUTTON_MIDDLE);
+    middle.connect_pressed(|_, _, _, _| player::set_muted(!prefs::get().muted));
+    mute.add_controller(middle);
     volume.connect_change_value(|s, _, v| {
         let v = v.clamp(0.0, 1.0);
         player::set_volume(v);
@@ -321,7 +472,11 @@ pub fn build() -> gtk::Box {
                 syncing.set(false);
                 let p = prefs::get();
                 mute.set_icon_name(volume_icon(p.volume, p.muted));
-                mute.set_tooltip_text(Some(if p.muted { "Unmute" } else { "Mute" }));
+                mute.set_tooltip_text(Some(match (window::narrow(), p.muted) {
+                    (true, _) => "Volume",
+                    (false, true) => "Unmute",
+                    (false, false) => "Mute",
+                }));
                 if (volume.value() - p.volume).abs() > 0.005 {
                     volume.set_value(p.volume);
                 }

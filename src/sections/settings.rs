@@ -272,6 +272,16 @@ pub fn build(page: &Page) {
     });
     g.add(&widgets::row("Current colours", "", Some(swatches.upcast_ref())));
 
+    let (r, _) = widgets::switch_row(
+        "Colours from cover",
+        "Tint Now playing with the colour of the cover that's playing.",
+        p.cover_colours,
+        |on| {
+            prefs::update(|p| p.cover_colours = on);
+            player::metadata_changed();
+        },
+    );
+    g.add(&r);
     let (r, _) = widgets::switch_row("Glow", "Soft accent glow around focused and selected elements.", p.glow, |on| {
         prefs::update(|p| p.glow = on);
         theme::apply();

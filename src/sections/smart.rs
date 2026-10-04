@@ -69,7 +69,7 @@ fn songs(page: &Page, key: &'static str, cols: &'static [Col], pick: fn(Vec<Rc<T
         &widgets::empty_state(
             "document-open-recent-symbolic",
             "Nothing played yet",
-            "Songs show up here once they've been played to the end.",
+            "A song counts as played once you've heard half of it, or four minutes.",
             None,
         ),
         Some("empty"),

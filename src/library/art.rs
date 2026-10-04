@@ -105,6 +105,36 @@ thread_local! {
     static FAILED: RefCell<std::collections::HashSet<String>> = RefCell::new(Default::default());
 }
 
+/// The picture's most colourful tone, as 0..1 RGB, from its small copy:
+/// pixels count by how saturated and bright they are, so a cover's grey
+/// background doesn't wash its colour out.
+pub fn tone(key: &str) -> Option<(f64, f64, f64)> {
+    let pb = Pixbuf::from_file_at_scale(file(key, true), 24, 24, false).ok()?;
+    let (n, stride) = (pb.n_channels() as usize, pb.rowstride() as usize);
+    let bytes = pb.read_pixel_bytes();
+    let (mut r, mut g, mut b, mut total) = (0.0, 0.0, 0.0, 0.0);
+    for y in 0..pb.height() as usize {
+        for x in 0..pb.width() as usize {
+            let i = y * stride + x * n;
+            let (pr, pg, pbl) = (bytes[i] as f64 / 255.0, bytes[i + 1] as f64 / 255.0, bytes[i + 2] as f64 / 255.0);
+            let (max, min) = (pr.max(pg).max(pbl), pr.min(pg).min(pbl));
+            let sat = if max > 0.0 { (max - min) / max } else { 0.0 };
+            let w = sat * sat * max;
+            r += pr * w;
+            g += pg * w;
+            b += pbl * w;
+            total += w;
+        }
+    }
+    if total < 2.0 {
+        return None;
+    }
+    let (r, g, b) = (r / total, g / total, b / total);
+    // Bright enough to read on a dark page.
+    let lift = 0.75 / r.max(g).max(b).max(0.01);
+    Some(((r * lift).min(1.0), (g * lift).min(1.0), (b * lift).min(1.0)))
+}
+
 /// The cache key for a picture on the web (station logos, podcast covers).
 pub fn key_for_url(url: &str) -> String {
     if url.is_empty() { String::new() } else { hash(url) }
@@ -218,6 +248,14 @@ impl Cover {
         picture.set_visible(false);
         root.add_overlay(&picture);
         Cover { root, picture, placeholder, key: Default::default(), small }
+    }
+
+    /// Resize (Now playing scales its cover with the window).
+    pub fn set_size(&self, size: i32) {
+        self.root.set_size_request(size, size);
+        self.picture.set_size_request(size, size);
+        self.placeholder.set_size_request(size, size);
+        self.placeholder.set_pixel_size((size / 3).clamp(16, 96));
     }
 
     /// The glyph shown when there's no picture.

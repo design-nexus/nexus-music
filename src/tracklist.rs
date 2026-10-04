@@ -4,6 +4,7 @@
 
 use crate::library::{Kind, Track, store};
 use crate::sections::{albums, playlist, podcasts};
+use crate::indicator::Indicator;
 use crate::{cmd, fmt, player, prefs, widgets, window};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -291,9 +292,24 @@ impl TrackTable {
                 let item = item.downcast_ref::<gtk::ListItem>().expect("list item");
                 let child: gtk::Widget = match col {
                     Col::Indicator => {
-                        let i = gtk::Image::from_icon_name("audio-volume-high-symbolic");
-                        i.add_css_class("accent-text");
-                        i.upcast()
+                        let i = Indicator::new();
+                        let area = i.area.clone();
+                        unsafe { area.set_data("indicator", i) };
+                        area.upcast()
+                    }
+                    // The number, or the playing mark over it.
+                    Col::Num => {
+                        let l = widgets::label("", "mono");
+                        l.add_css_class("cell-dim");
+                        l.set_xalign(1.0);
+                        let i = Indicator::new();
+                        i.area.set_halign(gtk::Align::End);
+                        i.area.set_margin_end(2);
+                        let o = gtk::Overlay::new();
+                        o.set_child(Some(&l));
+                        o.add_overlay(&i.area);
+                        unsafe { o.set_data("indicator", i) };
+                        o.upcast()
                     }
                     _ => {
                         let l = widgets::label("", "");
@@ -319,15 +335,22 @@ impl TrackTable {
                 let (Some(obj), Some(child)) = (item.item(), item.child()) else { return };
                 let Some(row) = row_of(&obj) else { return };
                 let t = &row.track;
+                let playing = is_playing(t);
+                if let Some(i) = unsafe { child.data::<Indicator>("indicator") } {
+                    unsafe { i.as_ref() }.set_on(playing);
+                }
                 if col == Col::Indicator {
-                    child.set_opacity(if is_playing(t) { 1.0 } else { 0.0 });
                     return;
                 }
-                let Some(l) = child.downcast_ref::<gtk::Label>() else { return };
+                let label = match col {
+                    Col::Num => child.downcast_ref::<gtk::Overlay>().and_then(|o| o.child()).and_downcast::<gtk::Label>(),
+                    _ => child.downcast_ref::<gtk::Label>().cloned(),
+                };
+                let Some(l) = label else { return };
                 let text = match col {
                     Col::Num => {
-                        if is_playing(t) {
-                            "▶".to_string()
+                        if playing {
+                            String::new()
                         } else if o.positions {
                             (row.index + 1).to_string()
                         } else {
@@ -354,8 +377,8 @@ impl TrackTable {
                     Col::Indicator => String::new(),
                 };
                 l.set_text(&text);
-                if col == Col::Num || col == Col::Title {
-                    if is_playing(t) {
+                if col == Col::Title {
+                    if playing {
                         l.add_css_class("accent-text");
                     } else {
                         l.remove_css_class("accent-text");

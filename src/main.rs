@@ -3,6 +3,7 @@
 mod cmd;
 mod eq;
 mod fmt;
+mod indicator;
 mod library;
 mod mpris;
 mod online;
@@ -34,7 +35,23 @@ const USAGE: &str = "Usage: music [OPTIONS] [FILES…]\n\
                   radio, podcasts, queue, equalizer, settings\n\
   --toggle        close the window if it's open, otherwise open it (for a keybinding)\n\
   --play-pause, --play, --pause, --stop, --next, --previous\n\
-                  control playback in the running window\n";
+                  control playback in the running window\n\
+  --sleep WHEN    pause after MINUTES, at the end of this song or album, or not:\n\
+                  a number, song, album or off\n";
+
+/// `--sleep 30`, `song`, `album` or `off`.
+fn parse_sleep(when: &str) -> Option<player::Sleep> {
+    match when {
+        "off" => Some(player::Sleep::Off),
+        "song" => Some(player::Sleep::EndOfSong),
+        "album" => Some(player::Sleep::EndOfAlbum),
+        n => n
+            .parse::<f64>()
+            .ok()
+            .filter(|m| *m > 0.0 && m.is_finite())
+            .map(|m| player::Sleep::At(std::time::Instant::now() + std::time::Duration::from_secs_f64(m * 60.0))),
+    }
+}
 
 thread_local! {
     static STARTED: Cell<bool> = const { Cell::new(false) };
@@ -99,7 +116,9 @@ fn main() -> glib::ExitCode {
     app.connect_command_line(|app, cl| {
         let argv: Vec<String> = cl.arguments().iter().map(|a| a.to_string_lossy().to_string()).collect();
         let has = |flag: &str| argv.iter().any(|a| a == flag);
-        let section = argv.iter().position(|a| a == "--section").and_then(|i| argv.get(i + 1)).cloned();
+        let value_of = |flag: &str| argv.iter().position(|a| a == flag).and_then(|i| argv.get(i + 1)).cloned();
+        let section = value_of("--section");
+        let sleep = value_of("--sleep");
         let mut files = Vec::new();
         let mut urls = Vec::new();
         let mut skip = true; // argv[0]
@@ -107,7 +126,7 @@ fn main() -> glib::ExitCode {
             if std::mem::take(&mut skip) {
                 continue;
             }
-            if a == "--section" {
+            if a == "--section" || a == "--sleep" {
                 skip = true;
                 continue;
             }
@@ -132,7 +151,7 @@ fn main() -> glib::ExitCode {
             return glib::ExitCode::SUCCESS;
         }
         start(app);
-        let remote = ["--play-pause", "--play", "--pause", "--stop", "--next", "--previous"].iter().any(|f| has(f));
+        let remote = ["--play-pause", "--play", "--pause", "--stop", "--next", "--previous", "--sleep"].iter().any(|f| has(f));
         // Playback commands to a running window shouldn't pop it up.
         if !(remote && window::window().is_some() && files.is_empty() && urls.is_empty() && section.is_none()) {
             window::present(app, section.as_deref());
@@ -154,6 +173,15 @@ fn main() -> glib::ExitCode {
         }
         if has("--previous") {
             player::previous();
+        }
+        if let Some(when) = &sleep {
+            match parse_sleep(when) {
+                Some(s) => player::set_sleep(s),
+                None => {
+                    eprintln!("music: --sleep takes minutes, song, album or off");
+                    return glib::ExitCode::FAILURE;
+                }
+            }
         }
         let songs = expand(&files);
         if !songs.is_empty() {

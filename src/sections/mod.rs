@@ -93,7 +93,7 @@ pub fn all() -> Vec<Section> {
             "Recently played",
             "document-open-recent-symbolic",
             "Library",
-            "Songs you've played to the end, newest first.",
+            "Songs you've played, newest first.",
             smart::build_recent,
             true,
         ),

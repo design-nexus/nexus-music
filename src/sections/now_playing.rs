@@ -2,7 +2,7 @@
 //! up next.
 
 use crate::library::art::Cover;
-use crate::library::{Kind, store};
+use crate::library::{Kind, lyrics, store};
 use crate::player::{self, Event, State, engine};
 use crate::widgets::{self, Page};
 use crate::{fmt, prefs, spectrum};
@@ -48,11 +48,29 @@ pub fn build(page: &Page) {
     stack.add_named(&empty, Some("empty"));
 
     let content = widgets::vbox(22);
-    // ----- Hero -----
+    // ----- Hero, over a blurred copy of the cover -----
     let hero = widgets::hbox(24);
     hero.add_css_class("now-hero");
     let cover = Cover::new(200, false);
     hero.append(&cover.root);
+    let backdrop = gtk::DrawingArea::new();
+    backdrop.add_css_class("now-backdrop");
+    let hero_frame = gtk::Overlay::new();
+    hero_frame.add_css_class("now-hero-frame");
+    hero_frame.set_overflow(gtk::Overflow::Hidden);
+    hero_frame.set_child(Some(&backdrop));
+    hero_frame.add_overlay(&hero);
+    hero_frame.set_measure_overlay(&hero, true);
+    // The cover grows with the page, and shrinks in a half-screen window.
+    let c = cover.clone();
+    let last = std::rc::Rc::new(std::cell::Cell::new(0));
+    backdrop.connect_resize(move |_, w, _| {
+        let size = if crate::window::narrow() { 140 } else { (w as f64 * 0.26).clamp(200.0, 300.0) as i32 };
+        if last.replace(size) != size {
+            let c = c.clone();
+            gtk::glib::idle_add_local_once(move || c.set_size(size));
+        }
+    });
     let text = widgets::vbox(4);
     text.set_valign(gtk::Align::End);
     text.set_hexpand(true);
@@ -73,30 +91,48 @@ pub fn build(page: &Page) {
     meta.add_css_class("detail-meta");
     text.append(&meta);
     hero.append(&text);
-    content.append(&hero);
+    content.append(&hero_frame);
 
-    // ----- Analyzer -----
+    // ----- Spectrum or lyrics -----
     let an_card = widgets::vbox(10);
     an_card.set_vexpand(true);
     let an_head = widgets::hbox(12);
-    let an_title = widgets::label("SPECTRUM", "group-title");
-    an_title.set_hexpand(true);
-    an_title.set_valign(gtk::Align::Center);
-    an_head.append(&an_title);
-    an_head.append(&widgets::segmented(
+    let has_spectrum = player::has_spectrum();
+    let view = if has_spectrum { prefs::get().now_view } else { "lyrics".to_string() };
+    let views = gtk::Stack::new();
+    views.set_vexpand(true);
+    views.set_transition_type(gtk::StackTransitionType::Crossfade);
+    let styles = widgets::segmented(
         &widgets::opts(&[("bars", "Bars"), ("line", "Line"), ("mirror", "Mirror")]),
         &prefs::get().spectrum_style,
         |v| {
             prefs::update(|p| p.spectrum_style = v);
             spectrum::redraw_all();
         },
-    ));
+    );
+    let switch = {
+        let (views, styles) = (views.clone(), styles.clone());
+        widgets::segmented(&widgets::opts(&[("spectrum", "Spectrum"), ("lyrics", "Lyrics")]), &view, move |v| {
+            views.set_visible_child_name(&v);
+            styles.set_visible(v == "spectrum");
+            prefs::update(|p| p.now_view = v);
+        })
+    };
+    switch.set_visible(has_spectrum);
+    switch.set_hexpand(true);
+    switch.set_halign(gtk::Align::Start);
+    an_head.append(&switch);
+    styles.set_visible(view == "spectrum");
+    an_head.append(&styles);
     an_card.append(&an_head);
     let analyzer = spectrum::analyzer(false);
     analyzer.set_vexpand(true);
     analyzer.set_size_request(-1, 200);
-    an_card.append(&analyzer);
-    an_card.set_visible(player::has_spectrum());
+    views.add_named(&analyzer, Some("spectrum"));
+    let lyrics = LyricsView::new();
+    views.add_named(&lyrics.root, Some("lyrics"));
+    views.set_visible_child_name(&view);
+    an_card.append(&views);
     content.append(&an_card);
 
     // ----- Up next -----
@@ -169,6 +205,8 @@ pub fn build(page: &Page) {
                         stack.set_visible_child_name("playing");
                         cover.set_placeholder(crate::playerbar::placeholder_icon(&t));
                         cover.set_key(&t.art);
+                        set_backdrop(&t.art);
+                        lyrics.load(&t);
                         title.set_text(&t.title);
                         artist_lbl.set_text(&t.artist);
                         *artist_name.borrow_mut() = t.album_artist_or_artist().to_string();
@@ -209,7 +247,10 @@ pub fn build(page: &Page) {
                         }
                         meta.set_text(&m.join(" · "));
                     }
-                    None => stack.set_visible_child_name("empty"),
+                    None => {
+                        stack.set_visible_child_name("empty");
+                        set_backdrop("");
+                    }
                 }
                 refresh_next();
             }
@@ -221,10 +262,11 @@ pub fn build(page: &Page) {
                 (State::Stopped, _) => "STOPPED",
             }),
             Event::Queue => refresh_next(),
+            Event::Position | Event::Seeked => lyrics.follow(player::position()),
             _ => {}
         }
     };
-    for e in [Event::Track, Event::State] {
+    for e in [Event::Track, Event::State, Event::Seeked] {
         refresh(e);
     }
     let r = refresh.clone();
@@ -235,4 +277,164 @@ pub fn build(page: &Page) {
             r(Event::State);
         }
     });
+}
+
+thread_local! {
+    static BACKDROP: gtk::CssProvider = {
+        let p = gtk::CssProvider::new();
+        if let Some(d) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&d, &p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+        }
+        p
+    };
+}
+
+/// Paint the hero's backdrop from this cover (blurred by the stylesheet), and
+/// with "Colours from cover" on, tint the hero's accents with its tone.
+fn set_backdrop(art: &str) {
+    use crate::library::art;
+    let path = [art::file(art, false), art::file(art, true)].into_iter().find(|p| !art.is_empty() && p.exists());
+    let mut css = match &path {
+        Some(p) => {
+            let uri = gtk::glib::filename_to_uri(p, None).map(|u| u.to_string()).unwrap_or_default();
+            format!(".now-backdrop {{ background-image: url(\"{uri}\"); }}\n")
+        }
+        None => ".now-backdrop { background-image: none; }\n".to_string(),
+    };
+    if prefs::get().cover_colours
+        && let Some((r, g, b)) = path.as_ref().and_then(|_| art::tone(art))
+    {
+        let c = format!("rgb({},{},{})", (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+        css.push_str(&format!(
+            ".now-hero .group-title, window.music-window .now-hero button.link-button.now-artist {{ color: {c}; }}\n\
+             .now-hero-frame {{ box-shadow: inset 0 0 0 1px alpha({c}, 0.25); }}\n"
+        ));
+    }
+    BACKDROP.with(|p| p.load_from_string(&css));
+}
+
+/// Lyrics for the song that's playing. Synced lyrics light up the current
+/// line and keep it in the middle; click a line to go there.
+#[derive(Clone)]
+struct LyricsView {
+    root: gtk::Stack,
+    scroll: gtk::ScrolledWindow,
+    lines: gtk::Box,
+    text: Rc<RefCell<Option<lyrics::Lyrics>>>,
+    rows: Rc<RefCell<Vec<gtk::Widget>>>,
+    current: Rc<std::cell::Cell<Option<usize>>>,
+    path: Rc<RefCell<std::path::PathBuf>>,
+}
+
+impl LyricsView {
+    fn new() -> LyricsView {
+        let root = gtk::Stack::new();
+        root.add_css_class("lyrics");
+        let lines = widgets::vbox(2);
+        lines.add_css_class("lyrics-lines");
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .child(&lines)
+            .vexpand(true)
+            .build();
+        root.add_named(&scroll, Some("lines"));
+        root.add_named(
+            &widgets::empty_state(
+                "music-note-symbolic",
+                "No lyrics for this song",
+                "Put a <tt>.lrc</tt> file with the same name next to the song, or add lyrics to its tags.",
+                None,
+            ),
+            Some("none"),
+        );
+        root.set_visible_child_name("none");
+        LyricsView {
+            root,
+            scroll,
+            lines,
+            text: Rc::default(),
+            rows: Rc::default(),
+            current: Rc::default(),
+            path: Rc::default(),
+        }
+    }
+
+    fn load(&self, t: &crate::library::Track) {
+        if *self.path.borrow() == t.path {
+            return;
+        }
+        *self.path.borrow_mut() = t.path.clone();
+        self.show(None);
+        if t.is_remote() {
+            return;
+        }
+        let (me, path, want) = (self.clone(), t.path.clone(), t.path.clone());
+        crate::cmd::background(
+            move || lyrics::read(&path),
+            move |l| {
+                // Still the same song?
+                if *me.path.borrow() == want {
+                    me.show(l);
+                }
+            },
+        );
+    }
+
+    fn show(&self, l: Option<lyrics::Lyrics>) {
+        while let Some(c) = self.lines.first_child() {
+            self.lines.remove(&c);
+        }
+        self.rows.borrow_mut().clear();
+        self.current.set(None);
+        self.scroll.vadjustment().set_value(0.0);
+        let Some(l) = l else {
+            *self.text.borrow_mut() = None;
+            self.root.set_visible_child_name("none");
+            return;
+        };
+        for (secs, line) in &l.lines {
+            let label = widgets::label(line, "lyric-line");
+            label.set_wrap(true);
+            label.set_xalign(0.0);
+            let row: gtk::Widget = if l.synced {
+                let b = gtk::Button::new();
+                b.add_css_class("flat");
+                b.add_css_class("lyric-button");
+                b.set_child(Some(&label));
+                let secs = *secs;
+                b.connect_clicked(move |_| player::seek(secs));
+                b.upcast()
+            } else {
+                label.add_css_class("unsynced");
+                label.set_selectable(true);
+                label.upcast()
+            };
+            self.lines.append(&row);
+            self.rows.borrow_mut().push(row);
+        }
+        *self.text.borrow_mut() = Some(l);
+        self.root.set_visible_child_name("lines");
+        self.follow(player::position());
+    }
+
+    /// Light the line at `secs` and scroll it to the middle.
+    fn follow(&self, secs: f64) {
+        let at = self.text.borrow().as_ref().and_then(|l| lyrics::line_at(l, secs));
+        if at == self.current.get() {
+            return;
+        }
+        let rows = self.rows.borrow();
+        if let Some(old) = self.current.get().and_then(|i| rows.get(i)) {
+            old.remove_css_class("current");
+        }
+        self.current.set(at);
+        let Some(row) = at.and_then(|i| rows.get(i)) else { return };
+        row.add_css_class("current");
+        if let Some(p) = row.compute_point(&self.lines, &gtk::graphene::Point::new(0.0, 0.0)) {
+            let adj = self.scroll.vadjustment();
+            let target = p.y() as f64 + row.height() as f64 / 2.0 - adj.page_size() / 2.0;
+            adj.set_value(target.clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+        }
+    }
 }
