@@ -61,6 +61,8 @@ pub struct Options {
     pub on_activate: Option<Rc<dyn Fn(usize)>>,
     /// Extra menu items acting on the selected rows' indexes.
     pub extra: Vec<Extra>,
+    /// A "DISC N" header above each disc (multi-disc albums).
+    pub disc_sections: bool,
 }
 
 impl Default for Options {
@@ -71,6 +73,7 @@ impl Default for Options {
             positions: false,
             on_activate: None,
             extra: Vec::new(),
+            disc_sections: false,
         }
     }
 }
@@ -239,6 +242,27 @@ impl TrackTable {
             if let Some(c) = default_sort {
                 view.sort_by_column(Some(&c), gtk::SortType::Ascending);
             }
+        }
+
+        if opts.disc_sections {
+            sorted.set_section_sorter(Some(&gtk::CustomSorter::new(|a, b| match (row_of(a), row_of(b)) {
+                (Some(a), Some(b)) => a.track.disc_no.unwrap_or(1).cmp(&b.track.disc_no.unwrap_or(1)).into(),
+                _ => gtk::Ordering::Equal,
+            })));
+            let headers = gtk::SignalListItemFactory::new();
+            headers.connect_setup(|_, item| {
+                if let Some(h) = item.downcast_ref::<gtk::ListHeader>() {
+                    h.set_child(Some(&widgets::label("", "disc-header")));
+                }
+            });
+            headers.connect_bind(|_, item| {
+                let Some(h) = item.downcast_ref::<gtk::ListHeader>() else { return };
+                let disc = h.item().and_then(|o| row_of(&o).map(|r| r.track.disc_no.unwrap_or(1)));
+                if let (Some(d), Some(l)) = (disc, h.child().and_downcast::<gtk::Label>()) {
+                    l.set_text(&format!("DISC {d}"));
+                }
+            });
+            view.set_header_factory(Some(&headers));
         }
 
         let t = table.clone();

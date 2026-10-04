@@ -101,7 +101,8 @@ fn open(album: &Rc<Album>) {
     } else {
         &[Col::Num, Col::Title, Col::Time, Col::Plays]
     };
-    let table = TrackTable::new(Options { cols, sortable: false, ..Default::default() });
+    let discs: std::collections::HashSet<u32> = album.tracks.iter().map(|t| t.disc_no.unwrap_or(1)).collect();
+    let table = TrackTable::new(Options { cols, sortable: false, disc_sections: discs.len() > 1, ..Default::default() });
     table.set(&album.tracks);
     detail.append(&table.root);
 

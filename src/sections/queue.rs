@@ -62,6 +62,7 @@ pub fn build(page: &Page) {
             ("Move up", Rc::new(|idx: Vec<usize>| move_by(&idx, -1))),
             ("Move down", Rc::new(|idx: Vec<usize>| move_by(&idx, 1))),
         ],
+        ..Default::default()
     });
     let empty = widgets::empty_state(
         "music-queue-symbolic",

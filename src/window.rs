@@ -18,6 +18,8 @@ struct Ui {
     nav_items: HashMap<String, gtk::Button>,
     playlist_box: gtk::Box,
     search: gtk::SearchEntry,
+    /// The search shown from the icon-only sidebar.
+    pop_search: gtk::SearchEntry,
     pages: HashMap<String, gtk::Widget>,
     sections: Vec<Section>,
     current: String,
@@ -128,6 +130,7 @@ fn build(app: &gtk::Application) {
     search.add_css_class("settings-search");
     search.add_css_class("compact-hide");
     nav.append(&search);
+    let (search_pop, pop_search) = compact_search(&nav);
 
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let mut nav_items = HashMap::new();
@@ -208,7 +211,7 @@ fn build(app: &gtk::Application) {
     overlay.set_child(Some(&body));
     window.set_child(Some(&overlay));
 
-    install_keys(&window, &search);
+    install_keys(&window, &search, &nav, &search_pop, &pop_search);
     search.connect_search_changed(|e| on_search(&e.text()));
     search.connect_activate(|_| sections::search::focus_results());
     search.connect_stop_search(|e| e.set_text(""));
@@ -245,6 +248,7 @@ fn build(app: &gtk::Application) {
         nav_items,
         playlist_box: playlist_box.clone(),
         search,
+        pop_search,
         pages: HashMap::new(),
         sections,
         current: String::new(),
@@ -261,8 +265,42 @@ fn build(app: &gtk::Application) {
     refresh_playlists();
 }
 
-/// Hide everything marked `compact-hide` in the sidebar (labels, headings,
-/// search, footer) when it's icon-only.
+/// The icon-only sidebar has no room for the search field: a search button
+/// opens one in a popover instead.
+fn compact_search(nav: &gtk::Box) -> (gtk::Popover, gtk::SearchEntry) {
+    let (button, label) = nav_button("system-search-symbolic", "Search", "Search the library (Ctrl+F)");
+    label.add_css_class("compact-hide");
+    button.add_css_class("compact-show");
+    button.set_visible(false);
+    let pop = gtk::Popover::new();
+    pop.set_parent(&button);
+    pop.set_position(gtk::PositionType::Right);
+    pop.add_css_class("search-popover");
+    let entry = gtk::SearchEntry::new();
+    entry.set_placeholder_text(Some("Search library"));
+    entry.add_css_class("settings-search");
+    entry.set_width_chars(28);
+    pop.set_child(Some(&entry));
+    entry.connect_search_changed(|e| on_search(&e.text()));
+    let p = pop.clone();
+    entry.connect_activate(move |_| {
+        p.popdown();
+        sections::search::focus_results();
+    });
+    let p = pop.clone();
+    entry.connect_stop_search(move |e| {
+        e.set_text("");
+        p.popdown();
+    });
+    let (p, e) = (pop.clone(), entry.clone());
+    button.connect_clicked(move |_| {
+        p.popup();
+        e.grab_focus();
+    });
+    nav.append(&button);
+    (pop, entry)
+}
+
 /// The button that collapses the sidebar to icons, beside the app heading.
 fn nav_head(heading: &gtk::Label) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -277,7 +315,8 @@ fn nav_head(heading: &gtk::Label) -> gtk::Box {
     row
 }
 
-/// The sidebar shows only icons: hide the labels, centre the icons and the toggle.
+/// The sidebar shows only icons: hide the labels (everything marked
+/// `compact-hide`), show what's marked `compact-show`, centre the icons and the toggle.
 fn apply_compact(nav: &gtk::Box, compact: bool) {
     if compact {
         nav.add_css_class("compact");
@@ -299,6 +338,9 @@ fn set_compact_hidden(root: &gtk::Box, compact: bool) {
         if w.has_css_class("compact-hide") {
             w.set_visible(!compact);
         }
+        if w.has_css_class("compact-show") {
+            w.set_visible(compact);
+        }
         // Icon-only: centre the icon in its pill, and the toggle in the column.
         if w.has_css_class("nav-item")
             && let Some(content) = w.downcast_ref::<gtk::Button>().and_then(|b| b.child())
@@ -318,12 +360,19 @@ fn set_compact_hidden(root: &gtk::Box, compact: bool) {
     walk(root.upcast_ref(), compact);
 }
 
-fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
+fn install_keys(
+    window: &gtk::ApplicationWindow,
+    search: &gtk::SearchEntry,
+    nav: &gtk::Box,
+    search_pop: &gtk::Popover,
+    pop_search: &gtk::SearchEntry,
+) {
     // Capture phase: these work wherever focus is, except while typing.
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let s2 = search.clone();
     let w2 = window.clone();
+    let (nav, search_pop, pop_search) = (nav.clone(), search_pop.clone(), pop_search.clone());
     keys.connect_key_pressed(move |_, key, _, mods| {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         let typing = gtk::prelude::GtkWindowExt::focus(&w2).is_some_and(|f| {
@@ -331,7 +380,12 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
         });
         match key {
             gdk::Key::f if ctrl => {
-                s2.grab_focus();
+                if nav.has_css_class("compact") {
+                    search_pop.popup();
+                    pop_search.grab_focus();
+                } else {
+                    s2.grab_focus();
+                }
                 glib::Propagation::Stop
             }
             gdk::Key::b if ctrl => {
@@ -478,11 +532,13 @@ pub fn navigate(id: &str) {
     u.stack.set_visible_child_name(&id);
     u.current = id.clone();
     let search = u.search.clone();
+    let pop_search = u.pop_search.clone();
     drop(u);
     if id != "search" {
-        if !search.text().is_empty() {
+        if !search.text().is_empty() || !pop_search.text().is_empty() {
             ui.borrow_mut().before_search.clear();
             search.set_text("");
+            pop_search.set_text("");
         }
         prefs::update(|p| p.last_section = id);
     }
@@ -511,6 +567,16 @@ fn refresh_playlists() {
     for p in store::playlists() {
         let (button, label) = nav_button("music-playlist-symbolic", &p.name, &p.name);
         label.add_css_class("compact-hide");
+        // Icon-only, every playlist would look the same: show its initial instead.
+        if let Some(content) = button.child().and_downcast::<gtk::Box>() {
+            if let Some(icon) = content.first_child() {
+                icon.add_css_class("compact-hide");
+            }
+            let initial = widgets::label(&initial_of(&p.name), "nav-initial");
+            initial.add_css_class("compact-show");
+            initial.set_visible(false);
+            content.prepend(&initial);
+        }
         let id = format!("playlist:{}", p.id);
         if id == current {
             button.add_css_class("active");
@@ -526,6 +592,11 @@ fn refresh_playlists() {
     if let Some(id) = PENDING.with(|p| p.borrow_mut().take()) {
         navigate(&id);
     }
+}
+
+/// The first letter or digit of a name, for the icon-only sidebar.
+fn initial_of(name: &str) -> String {
+    name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "#".into())
 }
 
 /// Show a short message at the bottom of the window.
@@ -572,10 +643,21 @@ fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
         std::env::var("MUSIC_SNAPSHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(820),
     );
     window.present();
+    if std::env::var_os("MUSIC_SNAPSHOT_MAX").is_some() {
+        window.maximize();
+    }
     let app = app.clone();
-    let delay = std::env::var("MUSIC_SNAPSHOT_DELAY").ok().and_then(|v| v.parse().ok()).unwrap_or(2500);
+    let delay: u64 = std::env::var("MUSIC_SNAPSHOT_DELAY").ok().and_then(|v| v.parse().ok()).unwrap_or(2500);
     if std::env::var_os("MUSIC_SNAPSHOT_PLAY").is_some() {
         glib::timeout_add_local_once(std::time::Duration::from_millis(300), player::play);
+    }
+    // MUSIC_SNAPSHOT_ALBUM=<part of a title> opens that album first.
+    if let Ok(want) = std::env::var("MUSIC_SNAPSHOT_ALBUM") {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(delay.saturating_sub(800)), move || {
+            if let Some(a) = store::albums().into_iter().find(|a| a.title.contains(&want)) {
+                sections::albums::show(&a.key);
+            }
+        });
     }
     glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
         if let Some(child) = window.child() {

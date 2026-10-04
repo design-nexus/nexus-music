@@ -926,6 +926,11 @@ window.music-window scale.volume > trough > slider:active {
 
 .album-card .cover {
   border-radius: 8px;
+  transition: box-shadow 150ms ease-out;
+}
+
+.album-grid > child:hover .album-card .cover {
+  box-shadow: 0 0 0 1px alpha(@theme_accent, 0.55), 0 6px 18px alpha(@theme_shadow, 0.5), 0 0 14px alpha(@theme_glow, 0.2);
 }
 
 .album-title {
@@ -1142,4 +1147,40 @@ progressbar.episode-progress > trough > progress {
   min-height: 3px;
   border-radius: 2px;
   background: @theme_accent;
+}
+
+/* ---------- Icon-only sidebar ---------- */
+
+.settings-navigation .nav-initial {
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 6px;
+  background: alpha(@theme_accent, 0.16);
+  color: @theme_accent;
+  font-size: 0.78em;
+  font-weight: 800;
+}
+
+.settings-navigation button.nav-item.active .nav-initial {
+  background: alpha(@theme_accent, 0.32);
+}
+
+window.music-window popover.search-popover > contents {
+  padding: 6px;
+}
+
+window.music-window popover.search-popover entry.settings-search {
+  margin: 0;
+}
+
+window.music-window columnview > listview > header {
+  background: transparent;
+}
+
+.disc-header {
+  margin: 12px 14px 4px;
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  color: alpha(@theme_dim_text, 0.85);
 }
