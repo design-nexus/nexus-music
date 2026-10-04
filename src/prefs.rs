@@ -67,6 +67,10 @@ pub struct Prefs {
     pub podcast_tab: String,
     /// Check subscribed podcasts for new episodes when Music opens.
     pub podcast_refresh: bool,
+    /// Each song table's sort: "artist", "added:desc"…
+    pub table_sort: std::collections::BTreeMap<String, String>,
+    /// Each song table's chosen columns.
+    pub table_columns: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for Prefs {
@@ -101,6 +105,8 @@ impl Default for Prefs {
             radio_tab: "favourites".into(),
             podcast_tab: "subscribed".into(),
             podcast_refresh: true,
+            table_sort: Default::default(),
+            table_columns: Default::default(),
         }
     }
 }

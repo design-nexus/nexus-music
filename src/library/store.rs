@@ -173,6 +173,14 @@ pub fn genres() -> Vec<Bucket> {
     })
 }
 
+/// Lowercase with accents and other marks taken off, so "beyonce" finds
+/// "Beyoncé". Search terms and what they're matched against both go through this.
+pub fn fold(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    use unicode_normalization::char::is_combining_mark;
+    s.nfd().filter(|c| !is_combining_mark(*c)).collect::<String>().to_lowercase()
+}
+
 /// Case-insensitive, ignoring a leading "The ".
 pub fn sort_key(s: &str) -> String {
     let l = s.trim().to_lowercase();
@@ -424,6 +432,13 @@ mod tests {
         assert_eq!(albums[0].artist, "Abba");
         assert_eq!(albums[1].tracks[0].path, PathBuf::from("/a"));
         assert_eq!(albums[1].duration, 120.0);
+    }
+
+    #[test]
+    fn folds_accents_and_case() {
+        assert_eq!(fold("Beyoncé"), "beyonce");
+        assert_eq!(fold("Sigur Rós — Hoppípolla"), "sigur ros — hoppipolla");
+        assert!(fold("The Beatles").contains(&fold("beatles")));
     }
 
     #[test]

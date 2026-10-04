@@ -194,6 +194,7 @@ pub fn build(id: i64) -> gtk::Widget {
         cols: &[Col::Num, Col::Title, Col::Artist, Col::Album, Col::Time],
         sortable: false,
         positions: true,
+        key: Some("playlist"),
         extra: vec![(
             "Remove from playlist",
             Rc::new(move |idx: Vec<usize>| {
@@ -236,6 +237,8 @@ pub fn build(id: i64) -> gtk::Widget {
     stack.add_named(&table.root, Some("table"));
     stack.add_named(&empty, Some("empty"));
     page.body.append(&stack);
+    let filter = views::filter_entry(&table, "Filter this playlist");
+    toolbar.insert_child_after(&filter, Some(&spacer));
 
     let load = {
         let (current, table, stack) = (current.clone(), table.clone(), stack.clone());

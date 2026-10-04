@@ -56,6 +56,12 @@ pub struct Track {
     pub last_played: i64,
     pub mtime: i64,
     pub size: i64,
+    /// kbps; 0 when unknown.
+    pub bitrate: u32,
+    /// Hz; 0 when unknown.
+    pub sample_rate: u32,
+    /// Bits per sample for lossless files; 0 for lossy or unknown.
+    pub bit_depth: u8,
     /// A downloaded copy of an episode.
     pub download: Option<PathBuf>,
     /// The podcast feed an episode belongs to.
@@ -91,9 +97,9 @@ impl Track {
         self.kind == Kind::Station
     }
 
-    /// Lowercased text the library search matches against.
+    /// Folded text (see `store::fold`) the library search matches against.
     pub fn haystack(&self) -> String {
-        format!("{} {} {} {} {}", self.title, self.artist, self.album, self.album_artist, self.genre).to_lowercase()
+        store::fold(&format!("{} {} {} {} {}", self.title, self.artist, self.album, self.album_artist, self.genre))
     }
 }
 

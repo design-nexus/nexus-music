@@ -57,7 +57,7 @@ pub fn build(page: &Page) {
 
     let songs_title = widgets::label("SONGS", "group-title");
     content.append(&songs_title);
-    let table = TrackTable::new(Options::default());
+    let table = TrackTable::new(Options { key: Some("search"), ..Default::default() });
     table.root.set_size_request(-1, 240);
     content.append(&table.root);
 
@@ -102,16 +102,16 @@ pub fn set_query(q: &str) {
     let Some(ui) = UI.with(|u| u.borrow().clone()) else { return };
     let mut u = ui.borrow_mut();
     u.query = q.to_string();
-    let terms: Vec<String> = q.to_lowercase().split_whitespace().map(str::to_string).collect();
+    let terms: Vec<String> = store::fold(q).split_whitespace().map(str::to_string).collect();
     let hit = |hay: &str| terms.iter().all(|t| hay.contains(t.as_str()));
 
     let songs: Vec<_> = store::tracks().into_iter().filter(|t| hit(&t.haystack())).collect();
     let albums: Vec<_> = store::albums()
         .into_iter()
-        .filter(|a| hit(&format!("{} {}", a.title, a.artist).to_lowercase()))
+        .filter(|a| hit(&store::fold(&format!("{} {}", a.title, a.artist))))
         .take(MAX_ALBUMS)
         .collect();
-    let artists: Vec<_> = store::artists().into_iter().filter(|b| hit(&b.name.to_lowercase())).take(MAX_ARTISTS).collect();
+    let artists: Vec<_> = store::artists().into_iter().filter(|b| hit(&store::fold(&b.name))).take(MAX_ARTISTS).collect();
 
     clear(&u.artists);
     for a in &artists {

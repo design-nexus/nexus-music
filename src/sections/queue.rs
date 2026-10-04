@@ -40,6 +40,7 @@ pub fn build(page: &Page) {
         cols: &[Col::Num, Col::Title, Col::Artist, Col::Album, Col::Time],
         sortable: false,
         positions: true,
+        key: Some("queue"),
         on_activate: Some(Rc::new(player::jump)),
         extra: vec![(
             "Remove from queue",

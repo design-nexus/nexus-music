@@ -4,7 +4,7 @@
 
 use crate::library::{Kind, Track, store};
 use crate::sections::{albums, playlist, podcasts};
-use crate::{cmd, fmt, player, widgets, window};
+use crate::{cmd, fmt, player, prefs, widgets, window};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
@@ -21,10 +21,18 @@ pub enum Col {
     Title,
     Artist,
     Album,
+    Genre,
     Year,
+    /// When the file joined the library (its modification time).
+    Added,
     Time,
     Plays,
+    /// Codec and quality: "FLAC · 44.1 kHz · 16-bit", "MP3 · 320 kbps".
+    Format,
 }
+
+/// The columns a table with a `key` can show or hide, in display order.
+const OPTIONAL: [Col; 8] = [Col::Artist, Col::Album, Col::Genre, Col::Year, Col::Added, Col::Time, Col::Plays, Col::Format];
 
 impl Col {
     fn title(self) -> &'static str {
@@ -33,15 +41,63 @@ impl Col {
             Col::Title => "Title",
             Col::Artist => "Artist",
             Col::Album => "Album",
+            Col::Genre => "Genre",
             Col::Year => "Year",
+            Col::Added => "Added",
             Col::Time => "Time",
             Col::Plays => "Plays",
+            Col::Format => "Format",
         }
     }
 
-    fn hidden_when_narrow(self) -> bool {
-        matches!(self, Col::Year | Col::Plays)
+    /// What settings.toml calls it.
+    fn id(self) -> &'static str {
+        match self {
+            Col::Indicator => "indicator",
+            Col::Num => "num",
+            Col::Title => "title",
+            Col::Artist => "artist",
+            Col::Album => "album",
+            Col::Genre => "genre",
+            Col::Year => "year",
+            Col::Added => "added",
+            Col::Time => "time",
+            Col::Plays => "plays",
+            Col::Format => "format",
+        }
     }
+
+    fn from_id(id: &str) -> Option<Col> {
+        [Col::Title].into_iter().chain(OPTIONAL).find(|c| c.id() == id)
+    }
+
+    fn hidden_when_narrow(self) -> bool {
+        matches!(self, Col::Year | Col::Plays | Col::Genre | Col::Added | Col::Format)
+    }
+
+    fn numeric(self) -> bool {
+        matches!(self, Col::Num | Col::Year | Col::Time | Col::Plays | Col::Added)
+    }
+}
+
+/// "FLAC · 44.1 kHz · 16-bit" for lossless files, "MP3 · 320 kbps" otherwise.
+pub fn format_of(t: &Track) -> String {
+    if t.is_remote() {
+        return String::new();
+    }
+    let ext = t.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+    let mut parts = vec![ext];
+    if t.bit_depth > 0 {
+        if t.sample_rate > 0 {
+            let khz = t.sample_rate as f64 / 1000.0;
+            parts.push(if khz.fract() == 0.0 { format!("{khz:.0} kHz") } else { format!("{khz:.1} kHz") });
+        }
+        parts.push(format!("{}-bit", t.bit_depth));
+    } else if t.bitrate > 0 {
+        parts.push(format!("{} kbps", t.bitrate));
+    }
+    parts.retain(|p| !p.is_empty());
+    parts.join(" · ")
 }
 
 pub struct Row {
@@ -67,6 +123,9 @@ pub struct Options {
     pub disc_sections: bool,
     /// Rows can be dragged to a new place (queue, playlists; unsorted tables only).
     pub reorder: Option<Reorder>,
+    /// Names this table in settings.toml, so its sort and chosen columns are
+    /// kept, and lets a right-click on the header choose the columns.
+    pub key: Option<&'static str>,
 }
 
 impl Default for Options {
@@ -79,6 +138,7 @@ impl Default for Options {
             extra: Vec::new(),
             disc_sections: false,
             reorder: None,
+            key: None,
         }
     }
 }
@@ -90,10 +150,30 @@ pub struct TrackTable {
     store: gio::ListStore,
     sorted: gtk::SortListModel,
     selection: gtk::MultiSelection,
+    filter: gtk::CustomFilter,
+    terms: Rc<RefCell<Vec<String>>>,
+    columns: Columns,
+}
+
+/// Every column a table has, and which of them the user wants shown.
+#[derive(Clone)]
+struct Columns {
+    all: Rc<Vec<(Col, gtk::ColumnViewColumn)>>,
+    chosen: Rc<RefCell<Vec<Col>>>,
+}
+
+impl Columns {
+    fn apply(&self, narrow: bool) {
+        let chosen = self.chosen.borrow();
+        for (col, c) in self.all.iter() {
+            let wanted = !OPTIONAL.contains(col) || chosen.contains(col);
+            c.set_visible(wanted && !(narrow && col.hidden_when_narrow()));
+        }
+    }
 }
 
 thread_local! {
-    static TABLES: RefCell<Vec<glib::WeakRef<gtk::ColumnView>>> = const { RefCell::new(Vec::new()) };
+    static TABLES: RefCell<Vec<(glib::WeakRef<gtk::ColumnView>, Columns)>> = const { RefCell::new(Vec::new()) };
     /// The table a drag started in and the rows it carries, for reordering.
     static DRAGGING: RefCell<Option<(glib::WeakRef<gtk::ColumnView>, Vec<usize>)>> = const { RefCell::new(None) };
 }
@@ -132,6 +212,9 @@ fn compare(col: Col, a: &Track, b: &Track) -> Ordering {
         Col::Year => a.year.cmp(&b.year).then_with(|| cmp_text(&a.album, &b.album)).then_with(|| album_order(a, b)),
         Col::Time => a.duration.total_cmp(&b.duration),
         Col::Plays => a.plays.get().cmp(&b.plays.get()),
+        Col::Genre => cmp_text(&a.genre, &b.genre).then_with(|| cmp_text(&a.artist, &b.artist)),
+        Col::Added => a.mtime.cmp(&b.mtime),
+        Col::Format => format_of(a).cmp(&format_of(b)),
         Col::Indicator | Col::Num => Ordering::Equal,
     }
 }
@@ -143,7 +226,18 @@ fn is_playing(t: &Track) -> bool {
 impl TrackTable {
     pub fn new(opts: Options) -> TrackTable {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let sorted = gtk::SortListModel::new(Some(store.clone()), None::<gtk::Sorter>);
+        let terms: Rc<RefCell<Vec<String>>> = Rc::default();
+        let tt = terms.clone();
+        let filter = gtk::CustomFilter::new(move |o| {
+            let terms = tt.borrow();
+            terms.is_empty()
+                || row_of(o).is_some_and(|r| {
+                    let hay = r.track.haystack();
+                    terms.iter().all(|t| hay.contains(t.as_str()))
+                })
+        });
+        let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+        let sorted = gtk::SortListModel::new(Some(filtered), None::<gtk::Sorter>);
         let selection = gtk::MultiSelection::new(Some(sorted.clone()));
         let view = gtk::ColumnView::new(Some(selection.clone()));
         view.add_css_class("track-table");
@@ -151,10 +245,40 @@ impl TrackTable {
         view.set_show_column_separators(false);
         let opts = Rc::new(opts);
 
-        let table = TrackTable { root: widgets::vbox(0), view: view.clone(), store, sorted: sorted.clone(), selection };
+        // With a key, every optional column exists and the chosen ones show.
+        let cols: Vec<Col> = match opts.key {
+            Some(_) => {
+                let lead = opts.cols.iter().copied().filter(|c| !OPTIONAL.contains(c));
+                lead.chain(OPTIONAL).collect()
+            }
+            None => opts.cols.to_vec(),
+        };
+        let saved = opts.key.and_then(|k| prefs::get().table_columns.get(k).cloned());
+        let chosen: Vec<Col> = match saved {
+            Some(ids) => ids.iter().filter_map(|i| Col::from_id(i)).collect(),
+            None => opts.cols.to_vec(),
+        };
+
+        let mut table = TrackTable {
+            root: widgets::vbox(0),
+            view: view.clone(),
+            store,
+            sorted: sorted.clone(),
+            selection,
+            filter,
+            terms,
+            columns: Columns { all: Rc::default(), chosen: Rc::new(RefCell::new(chosen)) },
+        };
+        let mut built = Vec::new();
 
         let mut default_sort: Option<gtk::ColumnViewColumn> = None;
-        for &col in opts.cols {
+        let saved_sort = opts.key.and_then(|k| prefs::get().table_sort.get(k).cloned()).unwrap_or_default();
+        let (saved_col, saved_desc) = match saved_sort.split_once(':') {
+            Some((c, dir)) => (Col::from_id(c), dir == "desc"),
+            None => (Col::from_id(&saved_sort), false),
+        };
+        let mut restore_sort: Option<gtk::ColumnViewColumn> = None;
+        for &col in &cols {
             let factory = gtk::SignalListItemFactory::new();
             let t = table.clone();
             let o = opts.clone();
@@ -169,13 +293,13 @@ impl TrackTable {
                     _ => {
                         let l = widgets::label("", "");
                         l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                        if matches!(col, Col::Num | Col::Year | Col::Time | Col::Plays) {
+                        if col.numeric() {
                             l.add_css_class("mono");
                             l.add_css_class("cell-dim");
                             l.set_xalign(1.0);
                         }
-                        if col == Col::Num {
-                            l.set_xalign(1.0);
+                        if col == Col::Format || col == Col::Genre {
+                            l.add_css_class("cell-dim");
                         }
                         l.upcast()
                     }
@@ -216,6 +340,10 @@ impl TrackTable {
                         let p = t.plays.get();
                         if p == 0 { String::new() } else { p.to_string() }
                     }
+                    Col::Genre => t.genre.clone(),
+                    Col::Added if t.is_remote() || t.mtime <= 0 => String::new(),
+                    Col::Added => fmt::date(t.mtime),
+                    Col::Format => format_of(t),
                     Col::Indicator => String::new(),
                 };
                 l.set_text(&text);
@@ -226,7 +354,7 @@ impl TrackTable {
                         l.remove_css_class("accent-text");
                     }
                 }
-                if col == Col::Title || col == Col::Artist || col == Col::Album {
+                if matches!(col, Col::Title | Col::Artist | Col::Album | Col::Genre | Col::Format) {
                     l.set_tooltip_text(Some(&text));
                 }
             });
@@ -238,12 +366,10 @@ impl TrackTable {
                 Col::Year => c.set_fixed_width(70),
                 Col::Time => c.set_fixed_width(74),
                 Col::Plays => c.set_fixed_width(70),
-                Col::Title => {
-                    c.set_expand(true);
-                }
-                Col::Artist | Col::Album => {
-                    c.set_expand(true);
-                }
+                Col::Added => c.set_fixed_width(110),
+                Col::Genre => c.set_fixed_width(130),
+                Col::Format => c.set_fixed_width(180),
+                Col::Title | Col::Artist | Col::Album => c.set_expand(true),
             }
             if opts.sortable && !matches!(col, Col::Indicator | Col::Num) {
                 c.set_sorter(Some(&gtk::CustomSorter::new(move |a, b| match (row_of(a), row_of(b)) {
@@ -253,14 +379,40 @@ impl TrackTable {
                 if col == Col::Artist {
                     default_sort = Some(c.clone());
                 }
+                if Some(col) == saved_col {
+                    restore_sort = Some(c.clone());
+                }
             }
             view.append_column(&c);
+            built.push((col, c));
         }
+        table.columns.all = Rc::new(built);
         if opts.sortable {
             sorted.set_sorter(view.sorter().as_ref());
-            if let Some(c) = default_sort {
-                view.sort_by_column(Some(&c), gtk::SortType::Ascending);
+            let (start, desc) = match restore_sort {
+                Some(c) => (Some(c), saved_desc),
+                None => (default_sort, false),
+            };
+            if let Some(c) = start {
+                view.sort_by_column(Some(&c), if desc { gtk::SortType::Descending } else { gtk::SortType::Ascending });
             }
+            if let (Some(key), Some(sorter)) = (opts.key, view.sorter().and_downcast::<gtk::ColumnViewSorter>()) {
+                let all = table.columns.all.clone();
+                sorter.connect_changed(move |s, _| {
+                    let Some(col) = s.primary_sort_column().and_then(|c| all.iter().find(|(_, x)| *x == c).map(|(col, _)| *col))
+                    else {
+                        return;
+                    };
+                    let dir = if s.primary_sort_order() == gtk::SortType::Descending { ":desc" } else { "" };
+                    let value = format!("{}{dir}", col.id());
+                    prefs::update(|p| {
+                        p.table_sort.insert(key.to_string(), value);
+                    });
+                });
+            }
+        }
+        if let Some(key) = opts.key {
+            table.column_menu(key);
         }
 
         if opts.disc_sections {
@@ -309,9 +461,70 @@ impl TrackTable {
                 s.items_changed(0, n, n);
             }
         });
-        TABLES.with(|t| t.borrow_mut().push(view.downgrade()));
-        apply_narrow(&view, window::narrow());
+        TABLES.with(|t| t.borrow_mut().push((view.downgrade(), table.columns.clone())));
+        table.columns.apply(window::narrow());
         table
+    }
+
+    /// Show only rows matching every word of `text` (accents and case ignored).
+    pub fn set_filter(&self, text: &str) {
+        *self.terms.borrow_mut() = store::fold(text).split_whitespace().map(str::to_string).collect();
+        self.filter.changed(gtk::FilterChange::Different);
+    }
+
+    /// Rows showing (after the filter).
+    pub fn shown(&self) -> u32 {
+        self.sorted.n_items()
+    }
+
+    /// A right-click on the header picks which columns show.
+    fn column_menu(&self, key: &'static str) {
+        let Some(header) = self.view.first_child() else { return };
+        let click = gtk::GestureClick::new();
+        click.set_button(gdk::BUTTON_SECONDARY);
+        let columns = self.columns.clone();
+        click.connect_pressed(move |g, _, x, y| {
+            let Some(anchor) = g.widget() else { return };
+            let pop = gtk::Popover::new();
+            pop.set_has_arrow(false);
+            pop.set_parent(&anchor);
+            pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            pop.add_css_class("menu-popover");
+            let list = widgets::vbox(2);
+            list.append(&widgets::label("Columns", "menu-heading-inline"));
+            for (col, _) in columns.all.iter().filter(|(c, _)| OPTIONAL.contains(c)) {
+                let check = gtk::CheckButton::with_label(col.title());
+                check.set_active(columns.chosen.borrow().contains(col));
+                let (columns, col) = (columns.clone(), *col);
+                check.connect_toggled(move |b| {
+                    {
+                        let mut chosen = columns.chosen.borrow_mut();
+                        chosen.retain(|c| *c != col);
+                        if b.is_active() {
+                            chosen.push(col);
+                        }
+                    }
+                    let ids: Vec<String> = columns.chosen.borrow().iter().map(|c| c.id().to_string()).collect();
+                    prefs::update(|p| {
+                        p.table_columns.insert(key.to_string(), ids);
+                    });
+                    columns.apply(window::narrow());
+                });
+                list.append(&check);
+            }
+            pop.set_child(Some(&list));
+            let anchor_weak = anchor.downgrade();
+            pop.connect_closed(move |p| {
+                let (p, a) = (p.clone(), anchor_weak.clone());
+                glib::idle_add_local_once(move || {
+                    if a.upgrade().is_some() {
+                        p.unparent();
+                    }
+                });
+            });
+            pop.popup();
+        });
+        header.add_controller(click);
     }
 
     pub fn set(&self, tracks: &[Rc<Track>]) {
@@ -450,11 +663,9 @@ impl TrackTable {
             let Some(w) = t.widget() else { return false };
             mark(&w, None);
             let (Some(rows), Some(item)) = (from_here(), item_weak.upgrade()) else { return false };
-            let pos = item.position();
-            if pos == gtk::INVALID_LIST_POSITION {
-                return false;
-            }
-            let to = pos as usize + usize::from(below(&w, y));
+            // The row's place in the list given to `set`, whatever the filter shows.
+            let Some(index) = item.item().and_then(|o| row_of(&o).map(|r| r.index)) else { return false };
+            let to = index + usize::from(below(&w, y));
             reorder(rows, to);
             true
         });
@@ -613,26 +824,12 @@ pub fn added_text(n: usize, where_: &str) -> String {
     format!("Added {} {where_}.", fmt::count(n, "song", "songs"))
 }
 
-fn apply_narrow(view: &gtk::ColumnView, narrow: bool) {
-    let cols = view.columns();
-    for i in 0..cols.n_items() {
-        if let Some(c) = cols.item(i).and_downcast::<gtk::ColumnViewColumn>() {
-            let title = c.title().map(|t| t.to_string()).unwrap_or_default();
-            if [Col::Year, Col::Plays].iter().any(|col| col.hidden_when_narrow() && col.title() == title) {
-                c.set_visible(!narrow);
-            }
-        }
-    }
-}
-
 /// Hide the less important columns in a half-screen window.
 pub fn set_narrow(narrow: bool) {
     TABLES.with(|t| {
-        t.borrow_mut().retain(|w| w.upgrade().is_some());
-        for w in t.borrow().iter() {
-            if let Some(v) = w.upgrade() {
-                apply_narrow(&v, narrow);
-            }
+        t.borrow_mut().retain(|(w, _)| w.upgrade().is_some());
+        for (_, columns) in t.borrow().iter() {
+            columns.apply(narrow);
         }
     });
 }

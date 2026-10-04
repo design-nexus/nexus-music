@@ -205,6 +205,20 @@ pub fn play_buttons(paths: impl Fn() -> Vec<PathBuf> + 'static) -> gtk::Box {
     row
 }
 
+/// A small search field that filters a song table as you type.
+pub fn filter_entry(table: &crate::tracklist::TrackTable, placeholder: &str) -> gtk::SearchEntry {
+    let entry = gtk::SearchEntry::new();
+    entry.set_placeholder_text(Some(placeholder));
+    entry.add_css_class("settings-search");
+    entry.add_css_class("page-search");
+    entry.set_width_chars(22);
+    entry.set_valign(gtk::Align::Center);
+    let t = table.clone();
+    entry.connect_search_changed(move |e| t.set_filter(&e.text()));
+    entry.connect_stop_search(|e| e.set_text(""));
+    entry
+}
+
 /// The header of an album, artist, folder or playlist view.
 /// Returns the header and its title label (to update in place).
 pub fn detail_header(

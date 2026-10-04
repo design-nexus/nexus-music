@@ -101,7 +101,28 @@ pub fn open_at(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.execute_batch(SCHEMA)?;
+    migrate(&conn)?;
     Ok(conn)
+}
+
+/// Columns added after the first release. A library from before them has
+/// every file read again once (mtime 0 no longer matches) to fill them in.
+fn migrate(conn: &Connection) -> Result<()> {
+    let has = |col: &str| -> Result<bool> {
+        let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name = ?1")?;
+        Ok(stmt.exists([col])?)
+    };
+    if !has("bitrate")? {
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE tracks ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE tracks ADD COLUMN sample_rate INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE tracks ADD COLUMN bit_depth INTEGER NOT NULL DEFAULT 0;
+             UPDATE tracks SET mtime = 0;
+             COMMIT;",
+        )?;
+    }
+    Ok(())
 }
 
 fn path_text(p: &Path) -> String {
@@ -111,7 +132,8 @@ fn path_text(p: &Path) -> String {
 pub fn load_all(conn: &Connection) -> Result<Vec<Track>> {
     let mut stmt = conn.prepare(
         "SELECT id, path, title, artist, album, album_artist, genre, year, track_no, disc_no, duration,
-                rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, art, plays, last_played, mtime, size
+                rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, art, plays, last_played, mtime, size,
+                bitrate, sample_rate, bit_depth
          FROM tracks",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -136,6 +158,9 @@ pub fn load_all(conn: &Connection) -> Result<Vec<Track>> {
             last_played: r.get(17)?,
             mtime: r.get(18)?,
             size: r.get(19)?,
+            bitrate: r.get(20)?,
+            sample_rate: r.get(21)?,
+            bit_depth: r.get(22)?,
             ..Default::default()
         })
     })?;
@@ -153,15 +178,17 @@ pub fn stamps(conn: &Connection) -> Result<HashMap<PathBuf, (i64, i64)>> {
 pub fn upsert(tx: &Transaction, t: &Track) -> Result<()> {
     tx.execute(
         "INSERT INTO tracks (path, title, artist, album, album_artist, genre, year, track_no, disc_no, duration,
-                             rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, art, mtime, size)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                             rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak, art, mtime, size,
+                             bitrate, sample_rate, bit_depth)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT(path) DO UPDATE SET
             title = excluded.title, artist = excluded.artist, album = excluded.album,
             album_artist = excluded.album_artist, genre = excluded.genre, year = excluded.year,
             track_no = excluded.track_no, disc_no = excluded.disc_no, duration = excluded.duration,
             rg_track_gain = excluded.rg_track_gain, rg_track_peak = excluded.rg_track_peak,
             rg_album_gain = excluded.rg_album_gain, rg_album_peak = excluded.rg_album_peak,
-            art = excluded.art, mtime = excluded.mtime, size = excluded.size",
+            art = excluded.art, mtime = excluded.mtime, size = excluded.size,
+            bitrate = excluded.bitrate, sample_rate = excluded.sample_rate, bit_depth = excluded.bit_depth",
         params![
             path_text(&t.path),
             t.title,
@@ -179,7 +206,10 @@ pub fn upsert(tx: &Transaction, t: &Track) -> Result<()> {
             t.rg_album_peak,
             t.art,
             t.mtime,
-            t.size
+            t.size,
+            t.bitrate,
+            t.sample_rate,
+            t.bit_depth
         ],
     )?;
     Ok(())

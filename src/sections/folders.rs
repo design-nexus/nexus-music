@@ -147,8 +147,14 @@ pub fn build(page: &Page) {
     let table = TrackTable::new(Options {
         cols: &[Col::Indicator, Col::Title, Col::Artist, Col::Album, Col::Time],
         sortable: false,
+        key: Some("folder"),
         ..Default::default()
     });
+    let filter = views::filter_entry(&table, "Filter this folder");
+    let spacer = widgets::hbox(0);
+    spacer.set_hexpand(true);
+    actions.append(&spacer);
+    actions.append(&filter);
     detail.append(&table.root);
     inner.add_named(&detail, Some("detail"));
 
@@ -174,6 +180,7 @@ pub fn build(page: &Page) {
             fmt::total(secs)
         ));
         *open.borrow_mut() = tracks.iter().map(|t| t.path.clone()).collect();
+        filter.set_text("");
         t2.set(&tracks);
         i2.set_visible_child_name("detail");
     });

@@ -19,7 +19,11 @@ pub fn read(path: &Path) -> Track {
             meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
     }
     if let Ok(file) = lofty::read_from_path(path) {
-        t.duration = file.properties().duration().as_secs_f64();
+        let props = file.properties();
+        t.duration = props.duration().as_secs_f64();
+        t.bitrate = props.audio_bitrate().unwrap_or(0);
+        t.sample_rate = props.sample_rate().unwrap_or(0);
+        t.bit_depth = props.bit_depth().unwrap_or(0);
         if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
             fill(&mut t, tag);
         }
