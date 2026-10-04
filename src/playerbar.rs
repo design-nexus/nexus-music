@@ -184,6 +184,15 @@ fn sleep_text(s: player::Sleep) -> String {
     }
 }
 
+/// Says where a click goes: to Now playing, or back from it.
+fn now_playing_tooltip(w: &impl IsA<gtk::Widget>) {
+    w.set_has_tooltip(true);
+    w.connect_query_tooltip(|_, _, _, _, tip| {
+        tip.set_text(Some(if window::current() == "now-playing" { "Back" } else { "Open Now playing" }));
+        true
+    });
+}
+
 pub fn build() -> gtk::Box {
     let bar = widgets::hbox(16);
     bar.add_css_class("player-bar");
@@ -208,7 +217,8 @@ pub fn build() -> gtk::Box {
     text.append(&artist);
     info.append(&text);
     let click = gtk::GestureClick::new();
-    click.connect_released(|_, _, _, _| window::navigate("now-playing"));
+    click.connect_released(|_, _, _, _| window::toggle_now_playing());
+    now_playing_tooltip(&info);
     info.add_controller(click);
     info.set_cursor_from_name(Some("pointer"));
     bar.append(&info);
@@ -269,9 +279,9 @@ pub fn build() -> gtk::Box {
     strip.set_size_request(110, 34);
     strip.set_hexpand(false);
     strip.set_valign(gtk::Align::Center);
-    strip.set_tooltip_text(Some("Open Now playing"));
+    now_playing_tooltip(&strip);
     let sclick = gtk::GestureClick::new();
-    sclick.connect_released(|_, _, _, _| window::navigate("now-playing"));
+    sclick.connect_released(|_, _, _, _| window::toggle_now_playing());
     strip.add_controller(sclick);
     right.append(&strip);
     let sleep = sleep_button();

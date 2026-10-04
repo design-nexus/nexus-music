@@ -554,6 +554,17 @@ pub fn back() {
     }
 }
 
+/// The player bar's song: open Now playing, or from there, go back to the
+/// page before it.
+pub fn toggle_now_playing() {
+    if current() != "now-playing" {
+        navigate("now-playing");
+        return;
+    }
+    let prev = ui().and_then(|u| u.borrow_mut().history.pop());
+    go(prev.as_deref().unwrap_or("albums"), false);
+}
+
 fn visible_back_button(w: &gtk::Widget) -> Option<gtk::Button> {
     if !w.is_mapped() {
         return None;
