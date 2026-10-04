@@ -191,6 +191,22 @@ pub fn build() -> gtk::Box {
     });
     mute.add_controller(scroll);
 
+    // Hovering the seek bar shows the time under the pointer.
+    let hover = gtk::EventControllerMotion::new();
+    hover.connect_motion(|c, x, _| {
+        let Some(w) = c.widget() else { return };
+        let d = player::duration();
+        if player::is_live() || d <= 0.0 || w.width() <= 0 {
+            w.set_tooltip_text(None);
+            return;
+        }
+        // The trough runs the scale's full width.
+        let frac = (x / w.width() as f64).clamp(0.0, 1.0);
+        w.set_tooltip_text(Some(&fmt::time(frac * d)));
+        w.trigger_tooltip_query();
+    });
+    seek.add_controller(hover);
+
     // While the user drags the seek bar, don't move it under them.
     let dragging: Rc<Cell<u32>> = Rc::new(Cell::new(0));
     let d = dragging.clone();

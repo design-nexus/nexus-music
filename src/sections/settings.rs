@@ -286,16 +286,7 @@ pub fn build(page: &Page) {
 
     // ----- Keyboard -----
     let g = page.group("Keyboard");
-    for (keys, what) in [
-        (&["Space"][..], "Play or pause"),
-        (&["Ctrl", "←"][..], "Previous song"),
-        (&["Ctrl", "→"][..], "Next song"),
-        (&["←"][..], "Back 5 seconds"),
-        (&["→"][..], "Forward 5 seconds"),
-        (&["Ctrl", "F"][..], "Search the library"),
-        (&["Esc"][..], "Clear the search"),
-        (&["Ctrl", "Q"][..], "Close"),
-    ] {
+    for (keys, what) in window::SHORTCUTS {
         g.add(&widgets::row(what, "", Some(widgets::key_caps(keys).upcast_ref())));
     }
     g.note("Media keys work through MPRIS. From a terminal or a binding: <tt>music --play-pause</tt>, <tt>--next</tt>, <tt>--previous</tt>.");

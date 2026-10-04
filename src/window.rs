@@ -25,6 +25,8 @@ struct Ui {
     current: String,
     /// Where Esc in the search goes back to.
     before_search: String,
+    /// Pages visited, for Back.
+    history: Vec<String>,
     overlay: gtk::Overlay,
 }
 
@@ -253,6 +255,7 @@ fn build(app: &gtk::Application) {
         sections,
         current: String::new(),
         before_search: String::new(),
+        history: Vec::new(),
         overlay,
     };
     UI.with(|u| *u.borrow_mut() = Some(Rc::new(RefCell::new(ui))));
@@ -378,6 +381,9 @@ fn install_keys(
         let typing = gtk::prelude::GtkWindowExt::focus(&w2).is_some_and(|f| {
             f.is::<gtk::Text>() || f.ancestor(gtk::Entry::static_type()).is_some() || f.is::<gtk::SearchEntry>()
         });
+        let alt = mods.contains(gdk::ModifierType::ALT_MASK);
+        let plain = !ctrl && !alt;
+        let done = glib::Propagation::Stop;
         match key {
             gdk::Key::f if ctrl => {
                 if nav.has_css_class("compact") {
@@ -386,36 +392,83 @@ fn install_keys(
                 } else {
                     s2.grab_focus();
                 }
-                glib::Propagation::Stop
+                done
             }
             gdk::Key::b if ctrl => {
                 toggle_sidebar();
-                glib::Propagation::Stop
+                done
             }
             gdk::Key::q | gdk::Key::w if ctrl => {
                 w2.close();
-                glib::Propagation::Stop
+                done
+            }
+            gdk::Key::l if ctrl => {
+                navigate("now-playing");
+                done
+            }
+            gdk::Key::Up | gdk::Key::Down if ctrl && !typing => {
+                let step = if key == gdk::Key::Up { 0.05 } else { -0.05 };
+                player::set_volume(prefs::get().volume + step);
+                done
+            }
+            gdk::Key::Left if alt => {
+                back();
+                done
+            }
+            _ if ctrl && !alt && key.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
+                let n = key.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize;
+                let id = ui().and_then(|u| u.borrow().sections.iter().filter(|s| s.nav).nth(n - 1).map(|s| s.id));
+                if let Some(id) = id {
+                    navigate(id);
+                }
+                done
             }
             gdk::Key::space if !typing => {
                 player::toggle();
-                glib::Propagation::Stop
+                done
+            }
+            gdk::Key::m if plain && !typing => {
+                player::set_muted(!prefs::get().muted);
+                done
+            }
+            gdk::Key::s if plain && !typing => {
+                player::set_shuffle(!player::shuffle());
+                done
+            }
+            gdk::Key::r if plain && !typing => {
+                player::cycle_repeat();
+                done
+            }
+            gdk::Key::question if !ctrl && !typing => {
+                show_shortcuts();
+                done
             }
             gdk::Key::Left if ctrl && !typing => {
                 player::previous();
-                glib::Propagation::Stop
+                done
             }
             gdk::Key::Right if ctrl && !typing => {
                 player::next();
-                glib::Propagation::Stop
+                done
             }
             gdk::Key::Escape if !s2.text().is_empty() => {
                 s2.set_text("");
-                glib::Propagation::Stop
+                done
             }
             _ => glib::Propagation::Proceed,
         }
     });
     window.add_controller(keys);
+
+    // The mouse's back button.
+    let mouse_back = gtk::GestureClick::new();
+    mouse_back.set_button(8);
+    mouse_back.set_propagation_phase(gtk::PropagationPhase::Capture);
+    mouse_back.connect_pressed(|g, _, _, _| {
+        g.set_state(gtk::EventSequenceState::Claimed);
+        back();
+    });
+    window.add_controller(mouse_back);
 
     // Bubble phase: plain arrows seek only when nothing focused used them.
     let keys = gtk::EventControllerKey::new();
@@ -436,6 +489,85 @@ fn install_keys(
         }
     });
     window.add_controller(keys);
+}
+
+/// Every keyboard shortcut, for Settings and the `?` list.
+pub const SHORTCUTS: &[(&[&str], &str)] = &[
+    (&["Space"], "Play or pause"),
+    (&["Ctrl", "←"], "Previous song"),
+    (&["Ctrl", "→"], "Next song"),
+    (&["←"], "Back 5 seconds"),
+    (&["→"], "Forward 5 seconds"),
+    (&["Ctrl", "↑"], "Volume up"),
+    (&["Ctrl", "↓"], "Volume down"),
+    (&["M"], "Mute or unmute"),
+    (&["S"], "Shuffle on or off"),
+    (&["R"], "Repeat: off, all, this song"),
+    (&["Ctrl", "F"], "Search the library"),
+    (&["Esc"], "Clear the search"),
+    (&["Ctrl", "L"], "Now playing"),
+    (&["Ctrl", "1–9"], "Go to a page in the sidebar"),
+    (&["Alt", "←"], "Back"),
+    (&["Ctrl", "B"], "Collapse or expand the sidebar"),
+    (&["?"], "Show these shortcuts"),
+    (&["Ctrl", "Q"], "Close"),
+];
+
+/// The shortcuts in a dialog.
+pub fn show_shortcuts() {
+    let (dialog, card) = widgets::dialog("Keyboard shortcuts", 440);
+    let list = widgets::vbox(6);
+    for (keys, what) in SHORTCUTS {
+        list.append(&widgets::row(what, "", Some(widgets::key_caps(keys).upcast_ref())));
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(560)
+        .child(&list)
+        .build();
+    card.append(&scroll);
+    let close = gtk::Button::with_label("Close");
+    close.set_halign(gtk::Align::End);
+    let d = dialog.clone();
+    close.connect_clicked(move |_| d.close());
+    card.append(&close);
+    dialog.present();
+}
+
+/// Back: close the detail view open on this page (an album, an artist, a
+/// podcast…) or, with none open, return to the page before.
+pub fn back() {
+    let Some(ui) = ui() else { return };
+    let page = {
+        let u = ui.borrow();
+        u.pages.get(&u.current).cloned()
+    };
+    if let Some(button) = page.as_ref().and_then(visible_back_button) {
+        button.emit_clicked();
+        return;
+    }
+    let prev = ui.borrow_mut().history.pop();
+    if let Some(id) = prev {
+        go(&id, false);
+    }
+}
+
+fn visible_back_button(w: &gtk::Widget) -> Option<gtk::Button> {
+    if !w.is_mapped() {
+        return None;
+    }
+    if w.has_css_class("back-button") {
+        return w.downcast_ref::<gtk::Button>().cloned();
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(b) = visible_back_button(&c) {
+            return Some(b);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 fn on_search(text: &str) {
@@ -514,6 +646,10 @@ fn ensure_built(id: &str) -> bool {
 }
 
 pub fn navigate(id: &str) {
+    go(id, true);
+}
+
+fn go(id: &str, record: bool) {
     let Some(ui) = ui() else { return };
     if id.starts_with("playlist:") && !store::loaded() {
         PENDING.with(|p| *p.borrow_mut() = Some(id.to_string()));
@@ -523,6 +659,13 @@ pub fn navigate(id: &str) {
         return;
     }
     let mut u = ui.borrow_mut();
+    if record && u.current != id && !u.current.is_empty() && u.current != "search" {
+        let prev = u.current.clone();
+        u.history.push(prev);
+        if u.history.len() > 50 {
+            u.history.remove(0);
+        }
+    }
     if let Some(prev) = u.nav_items.get(&u.current) {
         prev.remove_css_class("active");
     }
