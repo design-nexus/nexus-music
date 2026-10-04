@@ -65,7 +65,7 @@ pub fn build(page: &Page) {
     let c = cover.clone();
     let last = std::rc::Rc::new(std::cell::Cell::new(0));
     backdrop.connect_resize(move |_, w, _| {
-        let size = if crate::window::narrow() { 140 } else { (w as f64 * 0.26).clamp(200.0, 300.0) as i32 };
+        let size = if crate::window::narrow() { 140 } else { (w as f64 * 0.22).clamp(200.0, 260.0) as i32 };
         if last.replace(size) != size {
             let c = c.clone();
             gtk::glib::idle_add_local_once(move || c.set_size(size));
@@ -141,7 +141,15 @@ pub fn build(page: &Page) {
     let next_list = widgets::vbox(2);
     next_group.append(&next_list);
     content.append(&next_group);
-    stack.add_named(&content, Some("playing"));
+    // Scrolls rather than grow taller than the window, which would push the
+    // player bar off the bottom.
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .child(&content)
+        .vexpand(true)
+        .build();
+    stack.add_named(&scroll, Some("playing"));
     page.body.append(&stack);
 
     let artist_name: Rc<RefCell<String>> = Rc::default();
