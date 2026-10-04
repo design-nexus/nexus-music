@@ -39,6 +39,18 @@
   into a copy of the current track (same path) and names bare stations from icy-name;
   `Buffering` pauses non-live streams until full. Episodes save their position every
   10 s, on pause and on quit, and resume through `pending_seek`.
+- Crossfade: `Player` holds a second `Engine` (`spare`). Near a song's end
+  `maybe_start_xfade` starts the next song there and `xfade_step` fades both gains
+  (equal power); `finish_xfade` swaps the engines and advances the queue. Each engine's
+  bus messages carry its `id` and are ignored unless it's the active one. Loading,
+  seeking, pausing and stopping call `cancel_xfade`. Songs that run on within an album
+  (`continues_album`) stay gapless. The sleep timer's fade (`Player.fade`) multiplies
+  into `apply_gain`.
+- Schema changes go in `db::migrate` (checked with `pragma_table_info`); setting
+  `mtime = 0` makes the next scan reread every file to fill new columns.
+- Song tables (`tracklist.rs`): `store → FilterListModel → SortListModel`. An
+  `Options.key` keeps the sort and chosen columns in `prefs.table_sort` /
+  `table_columns`. Drag-reorder hands back row indexes (`Row.index`), not view positions.
 - MPRIS (`mpris.rs`) runs zbus' blocking API on its own thread: it reads a shared
   snapshot, sends commands back over a channel, and emits PropertiesChanged when the
   UI thread asks. Bus name `org.mpris.MediaPlayer2.music`.
@@ -49,3 +61,5 @@
   `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` at scratch dirs with
   `library_folders` set, and use `MUSIC_AUDIO_SINK=fakesink` to play silently.
   `mode = "theme"`, `theme = "catppuccin-latte"` checks light mode.
+  `MUSIC_SNAPSHOT_ALBUM=<part of a title>` opens that album first, and
+  `MUSIC_SNAPSHOT_MAX=1` maximizes the window for a taller shot.
