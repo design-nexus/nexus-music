@@ -51,6 +51,8 @@ pub struct Row {
 }
 
 pub type Extra = (&'static str, Rc<dyn Fn(Vec<usize>)>);
+/// Move the rows at these indexes to just before the given index.
+pub type Reorder = Rc<dyn Fn(Vec<usize>, usize)>;
 
 pub struct Options {
     pub cols: &'static [Col],
@@ -63,6 +65,8 @@ pub struct Options {
     pub extra: Vec<Extra>,
     /// A "DISC N" header above each disc (multi-disc albums).
     pub disc_sections: bool,
+    /// Rows can be dragged to a new place (queue, playlists; unsorted tables only).
+    pub reorder: Option<Reorder>,
 }
 
 impl Default for Options {
@@ -74,6 +78,7 @@ impl Default for Options {
             on_activate: None,
             extra: Vec::new(),
             disc_sections: false,
+            reorder: None,
         }
     }
 }
@@ -89,6 +94,20 @@ pub struct TrackTable {
 
 thread_local! {
     static TABLES: RefCell<Vec<glib::WeakRef<gtk::ColumnView>>> = const { RefCell::new(Vec::new()) };
+    /// The table a drag started in and the rows it carries, for reordering.
+    static DRAGGING: RefCell<Option<(glib::WeakRef<gtk::ColumnView>, Vec<usize>)>> = const { RefCell::new(None) };
+}
+
+/// The row widget a cell sits in, which shows the drop line.
+fn row_widget(cell: &gtk::Widget) -> Option<gtk::Widget> {
+    let mut w = cell.parent();
+    while let Some(p) = w {
+        if p.css_name() == "row" {
+            return Some(p);
+        }
+        w = p.parent();
+    }
+    None
 }
 
 fn row_of(obj: &glib::Object) -> Option<std::cell::Ref<'_, Row>> {
@@ -376,10 +395,70 @@ impl TrackTable {
             if pos == gtk::INVALID_LIST_POSITION {
                 return None;
             }
-            let paths: Vec<String> = t.targets(pos).into_iter().map(|(_, p, _)| p.to_string_lossy().into_owned()).collect();
+            let targets = t.targets(pos);
+            let rows = targets.iter().map(|(_, _, i)| *i).collect();
+            DRAGGING.with(|d| *d.borrow_mut() = Some((t.view.downgrade(), rows)));
+            let paths: Vec<String> = targets.into_iter().map(|(_, p, _)| p.to_string_lossy().into_owned()).collect();
             Some(gdk::ContentProvider::for_value(&playlist::drag_payload(&paths).to_value()))
         });
+        drag.connect_drag_end(|_, _, _| DRAGGING.with(|d| *d.borrow_mut() = None));
         child.add_controller(drag);
+
+        if let Some(reorder) = opts.reorder.clone() {
+            self.accept_reorder(child, item, reorder);
+        }
+    }
+
+    /// Dropping rows of this same table on a row moves them above or below it.
+    fn accept_reorder(&self, child: &gtk::Widget, item: &gtk::ListItem, reorder: Reorder) {
+        let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::COPY);
+        let from_here = {
+            let view = self.view.downgrade();
+            move || {
+                DRAGGING.with(|d| {
+                    d.borrow().as_ref().filter(|(v, _)| v.upgrade().is_some() && v.upgrade() == view.upgrade()).map(|(_, r)| r.clone())
+                })
+            }
+        };
+        let below = |w: &gtk::Widget, y: f64| y > w.height() as f64 / 2.0;
+        let mark = move |w: &gtk::Widget, y: Option<f64>| {
+            if let Some(row) = row_widget(w) {
+                row.remove_css_class("drop-above");
+                row.remove_css_class("drop-below");
+                if let Some(y) = y {
+                    row.add_css_class(if below(w, y) { "drop-below" } else { "drop-above" });
+                }
+            }
+        };
+        let f = from_here.clone();
+        target.connect_motion(move |t, _, y| {
+            if f().is_none() {
+                return gdk::DragAction::empty();
+            }
+            if let Some(w) = t.widget() {
+                mark(&w, Some(y));
+            }
+            gdk::DragAction::COPY
+        });
+        target.connect_leave(move |t| {
+            if let Some(w) = t.widget() {
+                mark(&w, None);
+            }
+        });
+        let item_weak = item.downgrade();
+        target.connect_drop(move |t, _, _, y| {
+            let Some(w) = t.widget() else { return false };
+            mark(&w, None);
+            let (Some(rows), Some(item)) = (from_here(), item_weak.upgrade()) else { return false };
+            let pos = item.position();
+            if pos == gtk::INVALID_LIST_POSITION {
+                return false;
+            }
+            let to = pos as usize + usize::from(below(&w, y));
+            reorder(rows, to);
+            true
+        });
+        child.add_controller(target);
     }
 
     fn menu(&self, anchor: &gtk::Widget, x: f64, y: f64, clicked: u32, opts: &Rc<Options>) {

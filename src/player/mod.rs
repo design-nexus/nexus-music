@@ -618,8 +618,42 @@ pub fn remove(index: usize) {
     queue_changed();
 }
 
-pub fn move_item(from: usize, to: usize) {
-    with(|p| p.queue.move_item(from, to));
+/// Move several queue items together to just before `to`.
+pub fn move_items(indexes: &[usize], to: usize) {
+    with(|p| p.queue.move_items(indexes, to));
+    queue_changed();
+}
+
+/// The queue as it is now, for undoing an edit.
+pub struct Snapshot {
+    items: Vec<PathBuf>,
+    cursor: Option<usize>,
+    original: Option<Vec<PathBuf>>,
+    position: f64,
+}
+
+pub fn snapshot() -> Snapshot {
+    let position = position();
+    with(|p| Snapshot { items: p.queue.items.clone(), cursor: p.queue.cursor, original: p.queue.original().cloned(), position })
+        .unwrap_or(Snapshot { items: Vec::new(), cursor: None, original: None, position: 0.0 })
+}
+
+/// Put back a queue from [`snapshot`]. If the current song changed, the old one
+/// comes back paused where it was.
+pub fn restore_snapshot(s: Snapshot) {
+    let before = current().map(|t| t.path.clone());
+    with(|p| p.queue.restore(s.items, s.cursor, s.original));
+    let after = with(|p| p.queue.current().cloned()).flatten();
+    if before != after && after.is_some() {
+        load_current(false);
+        if s.position > 1.0 && !is_live() {
+            with(|p| {
+                p.pending_seek = Some(s.position);
+                p.position = s.position;
+            });
+            emit(Event::Seeked);
+        }
+    }
     queue_changed();
 }
 

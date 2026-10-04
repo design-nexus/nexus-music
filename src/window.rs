@@ -601,22 +601,64 @@ fn initial_of(name: &str) -> String {
 
 /// Show a short message at the bottom of the window.
 pub fn toast(message: &str) {
+    show_toast(message, None);
+}
+
+/// A message with a button (Undo), shown a little longer.
+pub fn toast_action(message: &str, label: &str, action: impl Fn() + 'static) {
+    show_toast(message, Some((label, Box::new(action))));
+}
+
+thread_local! {
+    /// The toast showing now; a new one replaces it.
+    static TOAST: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
+}
+
+type ToastAction<'a> = Option<(&'a str, Box<dyn Fn()>)>;
+
+fn show_toast(message: &str, action: ToastAction<'_>) {
     let Some(ui) = ui() else {
         eprintln!("music: {message}");
         return;
     };
     let overlay = ui.borrow().overlay.clone();
+    if let Some(old) = TOAST.with(|t| t.borrow_mut().take())
+        && old.parent().is_some()
+    {
+        overlay.remove_overlay(&old);
+    }
     let label = gtk::Label::new(Some(message));
     label.set_wrap(true);
     label.set_max_width_chars(70);
-    let bx = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let bx = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     bx.add_css_class("toast");
     bx.append(&label);
+    let has_action = action.is_some();
+    if let Some((text, f)) = action {
+        let b = gtk::Button::with_label(text);
+        b.add_css_class("flat");
+        b.add_css_class("toast-action");
+        b.set_valign(gtk::Align::Center);
+        let (o, w) = (overlay.clone(), bx.downgrade());
+        b.connect_clicked(move |_| {
+            f();
+            if let Some(w) = w.upgrade()
+                && w.parent().is_some()
+            {
+                o.remove_overlay(&w);
+            }
+        });
+        bx.append(&b);
+    }
     bx.set_halign(gtk::Align::Center);
     bx.set_valign(gtk::Align::End);
     overlay.add_overlay(&bx);
-    glib::timeout_add_local_once(std::time::Duration::from_millis(3500), move || {
-        overlay.remove_overlay(&bx);
+    TOAST.with(|t| *t.borrow_mut() = Some(bx.clone()));
+    let ms = if has_action { 6000 } else { 3500 };
+    glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+        if bx.parent().is_some() {
+            overlay.remove_overlay(&bx);
+        }
     });
 }
 

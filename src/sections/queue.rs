@@ -7,23 +7,6 @@ use crate::{fmt, player, window};
 use gtk::prelude::*;
 use std::rc::Rc;
 
-/// Move the selected songs up or down one place, keeping their order.
-fn move_by(idx: &[usize], delta: i64) {
-    let len = player::queue_items().0.len();
-    let mut idx = idx.to_vec();
-    idx.sort_unstable();
-    if delta > 0 {
-        idx.reverse();
-    }
-    for i in idx {
-        let to = i as i64 + delta;
-        if to < 0 || to >= len as i64 {
-            return;
-        }
-        player::move_item(i, to as usize);
-    }
-}
-
 pub fn build(page: &Page) {
     let toolbar = widgets::hbox(10);
     toolbar.add_css_class("toolbar");
@@ -39,7 +22,17 @@ pub fn build(page: &Page) {
         }
     });
     toolbar.append(&save);
-    let clear = widgets::two_click("Clear", "Click again to clear", player::clear);
+    let clear = gtk::Button::with_label("Clear");
+    clear.set_tooltip_text(Some("Empty the queue"));
+    clear.connect_clicked(|_| {
+        let before = std::cell::RefCell::new(Some(player::snapshot()));
+        player::clear();
+        window::toast_action("Cleared the queue.", "Undo", move || {
+            if let Some(s) = before.borrow_mut().take() {
+                        player::restore_snapshot(s);
+                    }
+        });
+    });
     toolbar.append(&clear);
     page.body.append(&toolbar);
 
@@ -48,20 +41,24 @@ pub fn build(page: &Page) {
         sortable: false,
         positions: true,
         on_activate: Some(Rc::new(player::jump)),
-        extra: vec![
-            (
-                "Remove from queue",
-                Rc::new(|mut idx: Vec<usize>| {
-                    // Highest first, so earlier removals don't shift later ones.
-                    idx.sort_unstable_by(|a, b| b.cmp(a));
-                    for i in idx {
-                        player::remove(i);
+        extra: vec![(
+            "Remove from queue",
+            Rc::new(|mut idx: Vec<usize>| {
+                let before = std::cell::RefCell::new(Some(player::snapshot()));
+                // Highest first, so earlier removals don't shift later ones.
+                idx.sort_unstable_by(|a, b| b.cmp(a));
+                let n = idx.len();
+                for i in idx {
+                    player::remove(i);
+                }
+                window::toast_action(&format!("Removed {} from the queue.", fmt::count(n, "song", "songs")), "Undo", move || {
+                    if let Some(s) = before.borrow_mut().take() {
+                        player::restore_snapshot(s);
                     }
-                }),
-            ),
-            ("Move up", Rc::new(|idx: Vec<usize>| move_by(&idx, -1))),
-            ("Move down", Rc::new(|idx: Vec<usize>| move_by(&idx, 1))),
-        ],
+                });
+            }),
+        )],
+        reorder: Some(Rc::new(|rows: Vec<usize>, to: usize| player::move_items(&rows, to))),
         ..Default::default()
     });
     let empty = widgets::empty_state(

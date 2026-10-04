@@ -202,23 +202,12 @@ impl Queue {
         };
     }
 
-    pub fn move_item(&mut self, from: usize, to: usize) {
-        if from >= self.items.len() || to >= self.items.len() || from == to {
-            return;
-        }
-        let item = self.items.remove(from);
-        self.items.insert(to, item);
-        if let Some(c) = self.cursor {
-            self.cursor = Some(if c == from {
-                to
-            } else if from < c && to >= c {
-                c - 1
-            } else if from > c && to <= c {
-                c + 1
-            } else {
-                c
-            });
-        }
+    /// Move the items at `indexes` together to just before `to` (0..=len),
+    /// keeping their order and the cursor on the same song.
+    pub fn move_items(&mut self, indexes: &[usize], to: usize) {
+        let order = block_move(self.items.len(), indexes, to);
+        self.items = order.iter().map(|&i| self.items[i].clone()).collect();
+        self.cursor = self.cursor.and_then(|c| order.iter().position(|&i| i == c));
     }
 
     pub fn clear(&mut self) {
@@ -241,9 +230,41 @@ impl Queue {
     }
 }
 
+/// The new order (as old indexes) after moving `indexes` as one block to
+/// just before position `to` of the old list.
+pub fn block_move(len: usize, indexes: &[usize], to: usize) -> Vec<usize> {
+    let mut moving: Vec<usize> = indexes.iter().copied().filter(|&i| i < len).collect();
+    moving.sort_unstable();
+    moving.dedup();
+    let rest: Vec<usize> = (0..len).filter(|i| !moving.contains(i)).collect();
+    let at = rest.iter().take_while(|&&i| i < to.min(len)).count();
+    let mut out = rest[..at].to_vec();
+    out.extend(&moving);
+    out.extend(&rest[at..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_moves() {
+        assert_eq!(block_move(5, &[3, 1], 0), vec![1, 3, 0, 2, 4]);
+        assert_eq!(block_move(5, &[0, 1], 5), vec![2, 3, 4, 0, 1]);
+        assert_eq!(block_move(5, &[0], 3), vec![1, 2, 0, 3, 4]);
+        assert_eq!(block_move(5, &[2], 2), vec![0, 1, 2, 3, 4]);
+        assert_eq!(block_move(3, &[], 1), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn move_items_keeps_the_cursor() {
+        let mut q = Queue::default();
+        q.set(paths(5), 2);
+        q.move_items(&[3, 4], 0);
+        assert_eq!(q.items, vec!["/3", "/4", "/0", "/1", "/2"].into_iter().map(PathBuf::from).collect::<Vec<_>>());
+        assert_eq!(q.current(), Some(&PathBuf::from("/2")));
+    }
 
     fn paths(n: usize) -> Vec<PathBuf> {
         (0..n).map(|i| PathBuf::from(format!("/{i}"))).collect()
@@ -316,9 +337,9 @@ mod tests {
     fn moves_keep_the_cursor_on_the_same_song() {
         let mut q = Queue::default();
         q.set(paths(4), 2);
-        q.move_item(0, 3);
+        q.move_items(&[0], 4);
         assert_eq!(q.current(), Some(&PathBuf::from("/2")));
-        q.move_item(q.cursor.unwrap(), 0);
+        q.move_items(&[q.cursor.unwrap()], 0);
         assert_eq!(q.cursor, Some(0));
         assert_eq!(q.current(), Some(&PathBuf::from("/2")));
     }

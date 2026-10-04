@@ -189,7 +189,7 @@ pub fn build(id: i64) -> gtk::Widget {
     summary.set_margin_bottom(10);
     page.body.append(&summary);
 
-    let c = current.clone();
+    let (c, r) = (current.clone(), current.clone());
     let table = TrackTable::new(Options {
         cols: &[Col::Num, Col::Title, Col::Artist, Col::Album, Col::Time],
         sortable: false,
@@ -197,11 +197,32 @@ pub fn build(id: i64) -> gtk::Widget {
         extra: vec![(
             "Remove from playlist",
             Rc::new(move |idx: Vec<usize>| {
+                let before: Vec<PathBuf> = c.borrow().iter().map(|t| t.path.clone()).collect();
                 let keep: Vec<PathBuf> =
-                    c.borrow().iter().enumerate().filter(|(i, _)| !idx.contains(i)).map(|(_, t)| t.path.clone()).collect();
-                store::edit_playlists(move |conn| db::set_playlist(conn, id, &keep), || {});
+                    before.iter().enumerate().filter(|(i, _)| !idx.contains(i)).map(|(_, p)| p.clone()).collect();
+                let n = idx.len();
+                store::edit_playlists(
+                    move |conn| db::set_playlist(conn, id, &keep),
+                    move || {
+                        let before = before.clone();
+                        window::toast_action(
+                            &format!("Removed {} from {}.", fmt::count(n, "song", "songs"), name_of(id)),
+                            "Undo",
+                            move || {
+                                let b = before.clone();
+                                store::edit_playlists(move |conn| db::set_playlist(conn, id, &b), || {});
+                            },
+                        );
+                    },
+                );
             }),
         )],
+        reorder: Some(Rc::new(move |rows: Vec<usize>, to: usize| {
+            let paths: Vec<PathBuf> = r.borrow().iter().map(|t| t.path.clone()).collect();
+            let order = crate::player::queue::block_move(paths.len(), &rows, to);
+            let moved: Vec<PathBuf> = order.iter().map(|&i| paths[i].clone()).collect();
+            store::edit_playlists(move |conn| db::set_playlist(conn, id, &moved), || {});
+        })),
         ..Default::default()
     });
     let empty = widgets::empty_state(
